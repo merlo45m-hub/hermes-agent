@@ -293,46 +293,46 @@ def _browser_result(response: Any, session: Dict[str, object]) -> Dict[str, Any]
 
 
 def _execute_navigate(session: Dict[str, object], url: str) -> Dict[str, Any]:
-    from tools.browser_tool import browser_navigate
+    from tools.browser_camofox import camofox_navigate
 
-    return _browser_result(browser_navigate(url, task_id=_browser_task_id(session)), session)
+    return _browser_result(camofox_navigate(url, task_id=_browser_task_id(session)), session)
 
 
 def _execute_click(session: Dict[str, object], selector: str) -> Dict[str, Any]:
-    from tools.browser_tool import browser_click
+    from tools.browser_camofox import camofox_click
 
-    return _browser_result(browser_click(selector, task_id=_browser_task_id(session)), session)
+    return _browser_result(camofox_click(selector, task_id=_browser_task_id(session)), session)
 
 
 def _execute_type(session: Dict[str, object], selector: str, text: str) -> Dict[str, Any]:
-    from tools.browser_tool import browser_type
+    from tools.browser_camofox import camofox_type
 
-    return _browser_result(browser_type(selector, text, task_id=_browser_task_id(session)), session)
+    return _browser_result(camofox_type(selector, text, task_id=_browser_task_id(session)), session)
 
 
 def _execute_press(session: Dict[str, object], key: str) -> Dict[str, Any]:
-    from tools.browser_tool import browser_press
+    from tools.browser_camofox import camofox_press
 
-    return _browser_result(browser_press(key, task_id=_browser_task_id(session)), session)
+    return _browser_result(camofox_press(key, task_id=_browser_task_id(session)), session)
 
 
 def _execute_scroll(session: Dict[str, object], direction: str) -> Dict[str, Any]:
-    from tools.browser_tool import browser_scroll
+    from tools.browser_camofox import camofox_scroll
 
-    return _browser_result(browser_scroll(direction, task_id=_browser_task_id(session)), session)
+    return _browser_result(camofox_scroll(direction, task_id=_browser_task_id(session)), session)
 
 
 def _execute_snapshot(session: Dict[str, object]) -> Dict[str, Any]:
-    from tools.browser_tool import browser_snapshot
+    from tools.browser_camofox import camofox_snapshot
 
-    return _browser_result(browser_snapshot(task_id=_browser_task_id(session)), session)
+    return _browser_result(camofox_snapshot(task_id=_browser_task_id(session)), session)
 
 
 def _execute_screenshot(session: Dict[str, object]) -> Dict[str, Any]:
-    from tools.browser_tool import browser_vision
+    from tools.browser_camofox import camofox_vision
 
     return _browser_result(
-        browser_vision("Capture a screenshot of the current page", task_id=_browser_task_id(session)),
+        camofox_vision("Capture a screenshot of the current page", task_id=_browser_task_id(session)),
         session,
     )
 

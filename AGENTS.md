@@ -167,3 +167,11 @@ Every former god file is a **facade** (public entry points + the names other pac
 
 Long-form background: `website/docs/developer-guide/`. Workflow rules (PR/issue/review/salvage
 process) live in the `hermes-agent-dev` skill, not here.
+
+## Browser Protocol
+
+- The one active browser backend is Camofox (`browser.cloud_provider: camofox`).
+- Camofox runs on the VPS at port `9377`; `CAMOFOX_URL` is `http://10.9.0.1:9377`.
+- The MCP browser surface is the 11 `camofox_*` tools exposed by the Camofox MCP server.
+- The LangChain orchestration layer (`agent/langchain_browser.py`) calls Camofox directly. Do not change `browser.cloud_provider` to another backend.
+- Obscura, browser-harness, and Browserbase are not active browsing backends. Do not enable or route browsing through them.

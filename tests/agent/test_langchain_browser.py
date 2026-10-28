@@ -184,7 +184,6 @@ def test_agent_tool_surface_used(monkeypatch):
 
 def test_browser_actions_call_real_tool_surface(monkeypatch):
     import tools.browser_camofox as browser_camofox
-    import tools.browser_tool as browser_tool
     from agent.langchain_browser import (
         _execute_click,
         _execute_close,
@@ -207,12 +206,11 @@ def test_browser_actions_call_real_tool_surface(monkeypatch):
         return call
 
     tool_names = (
-        "browser_navigate", "browser_click", "browser_type", "browser_press",
-        "browser_scroll", "browser_snapshot", "browser_vision",
+        "camofox_navigate", "camofox_click", "camofox_type", "camofox_press",
+        "camofox_scroll", "camofox_snapshot", "camofox_vision", "camofox_close",
     )
     for name in tool_names:
-        monkeypatch.setattr(browser_tool, name, response(name))
-    monkeypatch.setattr(browser_camofox, "camofox_close", response("camofox_close"))
+        monkeypatch.setattr(browser_camofox, name, response(name))
 
     actions = [
         _execute_navigate(session, "https://example.com"),
@@ -227,7 +225,7 @@ def test_browser_actions_call_real_tool_surface(monkeypatch):
 
     assert all(result["status"] == "success" for result in actions)
     assert [call[0] for call in calls] == [
-        "browser_navigate", "browser_click", "browser_type", "browser_press",
-        "browser_scroll", "browser_snapshot", "browser_vision", "camofox_close",
+        "camofox_navigate", "camofox_click", "camofox_type", "camofox_press",
+        "camofox_scroll", "camofox_snapshot", "camofox_vision", "camofox_close",
     ]
     assert all(call[2] == "agent-task" for call in calls)
