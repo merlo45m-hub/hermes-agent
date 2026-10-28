@@ -136,3 +136,17 @@ class CloudBrowserProvider(BrowserProvider):
             # Cloud-scoped hook: installs the agent-browser CLI only (the vendor hosts Chromium).
             "post_setup": "browserbase",
         }
+
+    # -- LangChain orchestration support -------------------------------------
+    def langchrome(self, *, llm: "LLMCall") -> "LangChromeBrowserAgent":
+        """Wrap this provider in a :class:`agent.browser_provider.LangChromeBrowserAgent`.
+
+        The wrapped agent keeps the full BrowserProvider interface (session
+        lifecycle, availability, metadata contract) while driving navigation and
+        element interaction through the managed LLM.  The shared base means every
+        bundled cloud-browser vendor plugin (Browser Use, Browserbase, Firecrawl)
+        can be surfaced as a LangChain agent without new code in each vendor.
+        """
+        from agent.browser_provider import LangChromeBrowserAgent
+
+        return LangChromeBrowserAgent(self, llm=llm)
