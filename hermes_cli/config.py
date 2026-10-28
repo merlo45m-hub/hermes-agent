@@ -3038,7 +3038,7 @@ _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
     # Plugin enable/disable lists + per-plugin entries; absent from DEFAULT_CONFIG.
-    "plugins"})
+    "plugins", "browser"})
 
 # Top-level keys that can be ANY user-supplied name.
 _DYNAMIC_TOP_LEVEL_KEYS = frozenset({
@@ -3578,11 +3578,12 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
     # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
     # usually read by nothing, so it must not look like a live setting. The check is a
-    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``browser.cloud_provider``,
-    # ``stt.provider``, ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
-    # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
-    # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
-    # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.
+    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``stt.provider``,
+    # ``gateway.proxy_url``: a stored value counts as an explicit user pick), so the wording
+    # hedges exactly like the set-path notice. The open ``browser`` section accepts
+    # ``browser.cloud_provider`` without this notice. Custom top-level keys stay exempt (they are
+    # bridged into os.environ for skills) and ``_validate_config_key`` already accepts open-subkey
+    # sections. stderr keeps stdout/--json parseable; the exit code stays 0.
     if _split_key_path(key)[0] in _known_top_level_keys():
         is_known, suggestion = _validate_config_key(key)
         if not is_known:

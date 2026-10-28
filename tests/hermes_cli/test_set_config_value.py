@@ -248,19 +248,18 @@ class TestConfigGetPhantomKeyNotice:
         assert json.loads(captured.out) is True  # stdout stays parseable: notice is stderr-only
         assert "not a recognized config key" in captured.err
 
-    def test_unseeded_live_key_notice_hedges_instead_of_asserting_unread(
+    def test_unseeded_live_browser_key_is_recognized_without_notice(
         self, _isolated_hermes_home, capsys
     ):
-        # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
-        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
+        # ``browser.cloud_provider`` is deliberately unseeded in DEFAULT_CONFIG but read by
+        # tools/browser_tool_cloud.py, so the open browser section keeps it schema-recognized.
         (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
 
         config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))
 
         captured = capsys.readouterr()
         assert captured.out.strip() == "local"
-        assert "may not read it" in captured.err
-        assert "does not read it" not in captured.err
+        assert "not a recognized config key" not in captured.err
 
     @pytest.mark.parametrize(
         "key, body",
@@ -566,6 +565,7 @@ class TestValidateConfigKey:
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).
         "platform_toolsets.cli",
+        "browser.cloud_provider",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
