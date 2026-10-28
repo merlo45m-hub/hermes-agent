@@ -266,36 +266,81 @@ class AgentTool:
     call: Callable[..., Dict[str, Any]]
 
 
+def _browser_task_id(session: Dict[str, object]) -> str:
+    """Return the task key shared by the browser tools and their provider session."""
+    task_id = session.get("session_name") or session.get("task_id") or session.get("bb_session_id")
+    if not task_id:
+        raise ValueError("Browser session metadata does not contain a task identifier")
+    return str(task_id)
+
+
+def _browser_result(response: Any, session: Dict[str, object]) -> Dict[str, Any]:
+    """Normalize browser tool responses to the LangChain agent result contract."""
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except json.JSONDecodeError:
+            response = {"message": response}
+    if not isinstance(response, dict):
+        response = {"result": response}
+    success = response.get("success") is not False and "error" not in response
+    return {
+        "status": "success" if success else "error",
+        "result": response,
+        **({"message": str(response["error"])} if not success and response.get("error") else {}),
+        "session": session,
+    }
+
+
 def _execute_navigate(session: Dict[str, object], url: str) -> Dict[str, Any]:
-    return {"status": "success", "result": f"navigate -> {url}", "session": session}
+    from tools.browser_tool import browser_navigate
+
+    return _browser_result(browser_navigate(url, task_id=_browser_task_id(session)), session)
 
 
 def _execute_click(session: Dict[str, object], selector: str) -> Dict[str, Any]:
-    return {"status": "success", "result": f"click {selector}", "session": session}
+    from tools.browser_tool import browser_click
+
+    return _browser_result(browser_click(selector, task_id=_browser_task_id(session)), session)
 
 
 def _execute_type(session: Dict[str, object], selector: str, text: str) -> Dict[str, Any]:
-    return {"status": "success", "result": f"type into {selector}: {text!r}", "session": session}
+    from tools.browser_tool import browser_type
+
+    return _browser_result(browser_type(selector, text, task_id=_browser_task_id(session)), session)
 
 
 def _execute_press(session: Dict[str, object], key: str) -> Dict[str, Any]:
-    return {"status": "success", "result": f"press {key}", "session": session}
+    from tools.browser_tool import browser_press
+
+    return _browser_result(browser_press(key, task_id=_browser_task_id(session)), session)
 
 
 def _execute_scroll(session: Dict[str, object], direction: str) -> Dict[str, Any]:
-    return {"status": "success", "result": f"scroll {direction}", "session": session}
+    from tools.browser_tool import browser_scroll
+
+    return _browser_result(browser_scroll(direction, task_id=_browser_task_id(session)), session)
 
 
 def _execute_snapshot(session: Dict[str, object]) -> Dict[str, Any]:
-    return {"status": "success", "result": "snapshot (accessibility tree)", "session": session}
+    from tools.browser_tool import browser_snapshot
+
+    return _browser_result(browser_snapshot(task_id=_browser_task_id(session)), session)
 
 
 def _execute_screenshot(session: Dict[str, object]) -> Dict[str, Any]:
-    return {"status": "success", "result": "screenshot (PNG data)", "session": session}
+    from tools.browser_tool import browser_vision
+
+    return _browser_result(
+        browser_vision("Capture a screenshot of the current page", task_id=_browser_task_id(session)),
+        session,
+    )
 
 
 def _execute_close(session: Dict[str, object]) -> Dict[str, Any]:
-    return {"status": "success", "result": "page closed", "session": session}
+    from tools.browser_camofox import camofox_close
+
+    return _browser_result(camofox_close(task_id=_browser_task_id(session)), session)
 
 
 REQUIRED_TOOLS: Tuple[AgentTool, ...] = (
