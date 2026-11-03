@@ -5,13 +5,22 @@ fire-and-forget queue that never blocks or raises into gateway code, and OTLP
 subscribers consume them off the hot path. Nothing is persisted locally.
 Out of scope: trajectory capture, usage analytics, any content-bearing signal
 (those belong to the NeMo Relay integration).
+
+``langchain_telemetry`` provides LangChain callback handlers for tracing
+LLM calls, tool execution, and multi-step reasoning to Langfuse and Arize Phoenix.
 """
 
 from __future__ import annotations
 
-from . import emitter, events
+from . import emitter, events, langchain_telemetry
 
 emit = emitter.emit
 get_emitter = emitter.get_emitter
 
-__all__ = ["emit", "emitter", "events", "get_emitter"]
+__all__ = [
+    "emit",
+    "emitter",
+    "events",
+    "get_emitter",
+    "langchain_telemetry",
+]
