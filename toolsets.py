@@ -36,6 +36,8 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
     # Service-gated connector account status and authorization links.
     "manage_connections",
+    # Layer 5 multi-agent orchestration (state machine with handoffs / consensus).
+    "orchestrate",
 ]
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
