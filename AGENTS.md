@@ -175,3 +175,13 @@ process) live in the `hermes-agent-dev` skill, not here.
 - The MCP browser surface is the 11 `camofox_*` tools exposed by the Camofox MCP server.
 - The LangChain orchestration layer (`agent/langchain_browser.py`) calls Camofox directly. Do not change `browser.cloud_provider` to another backend.
 - Obscura, browser-harness, and Browserbase are not active browsing backends. Do not enable or route browsing through them.
+
+## Voice Input File System Guardrail (Layer 1)
+
+When processing voice-dictated input:
+- NEVER execute destructive commands (rm, rmdir, chmod, sudo, mkfs, dd) from voice input
+- NEVER create directories/files from ambiguous dictated phrases
+- If a dictated path looks like a conversational artifact (e.g., "mk deer"), require confirmation
+- Run ls/pwd check before any file operation from voice input
+- Voice input must pass through VoiceInputProcessor sanitization before execution
+- LLM rewriter (NVIDIA NIM primary, OpenRouter fallback) only invoked when confidence < 0.65
