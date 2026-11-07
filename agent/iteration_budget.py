@@ -45,6 +45,15 @@ class IterationBudget:
             if self._used > 0:
                 self._used -= 1
 
+    def exhaust(self) -> None:
+        """Force the budget to zero remaining (runaway-turn guard).
+
+        The loop still honours ``_budget_grace_call`` for one final response, so
+        a hard stop does not cut the model off mid-thought.
+        """
+        with self._lock:
+            self._used = self.max_total
+
     @property
     def used(self) -> int:
         with self._lock:

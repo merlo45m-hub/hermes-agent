@@ -294,9 +294,21 @@ def emit_runtime_status_transition(previous: Optional[dict[str, Any]], current: 
     """Emit immediate content-free gateway events for runtime status changes.  Called by
     gateway.status.write_runtime_status after persisting; fully fail-open."""
     try:
+        # Lifecycle spans (startup/shutdown/state change) are the ones a postmortem
+        # reads first. Give them the same memory sample as the periodic snapshot so
+        # an OOM/LMK death is classifiable without leaving Phoenix.
+        try:
+            from gateway.lifecycle_ledger import sample_memory
+            mem = {k: v for k, v in sample_memory().items()
+                   if k in ("rss_kib", "mem_total_kib", "mem_available_kib", "swap_used_kib")
+                   and isinstance(v, int)}
+        except Exception:
+            mem = {}
         ctx = dict(profile=_safe_profile(), version=_safe_version())
         for ev in _lifecycle_events(previous, current, **ctx) + _platform_events(previous, current, **ctx):
-            emitter.emit(ev)
+            payload = dict(ev) if isinstance(ev, dict) else dict(ev.to_dict())
+            payload.update(mem)
+            emitter.emit(payload)
     except Exception:
         logger.debug("gateway runtime status transition emit failed", exc_info=True)
 

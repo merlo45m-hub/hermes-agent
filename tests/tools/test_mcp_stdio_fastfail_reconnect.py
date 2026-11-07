@@ -31,6 +31,7 @@ import pytest
 
 pytest.importorskip("mcp")
 from tools import mcp_tool_loop as _mcp_loop
+from tools.mcp_tool_handlers import _StdioChildExited
 
 
 def _success_result():
@@ -306,3 +307,56 @@ def test_child_dying_again_after_respawn_does_not_hot_cycle(
         assert mcp_tool._server_error_counts.get("srv-flap", 0) == 1
     finally:
         _cleanup(mcp_tool, "srv-flap")
+
+
+def test_cold_start_midcall_child_death_retries_once_and_succeeds(monkeypatch, tmp_path):
+    """First call on an unproven (cold) session loses the stdio child mid-call:
+    reconnect, replay once on the fresh session, and succeed. No prior call ever
+    ran so there is no side effect to duplicate; the at-most-once guarantee only
+    binds proven sessions."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    alive = {"v": True}
+    calls = {"n": 0}
+
+    async def _failing_call(*a, **kw):
+        calls["n"] += 1
+        alive["v"] = False
+        raise _StdioChildExited("mid-call child death on cold start", in_flight=True)
+
+    async def _good_call(*a, **kw):
+        calls["n"] += 1
+        return _success_result()
+
+    def _respawn(server):
+        alive["v"] = True
+        new_session = MagicMock()
+        new_session.call_tool = _good_call
+        server.session = new_session
+        server._ready.set()
+
+    server = _install_stub_server(
+        mcp_tool, "srv-cold", _failing_call,
+        children_dead=lambda: not alive["v"],
+        on_reconnect=_respawn,
+    )
+    server._session_proven = False  # cold start: no successful call yet on this session
+    server._watch_stdio_children = None  # plain-await path: call_tool raises directly
+    server._is_http = lambda: False
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv-cold", "tool1", 10.0)
+        parsed = json.loads(handler({}))
+        assert "error" not in parsed, parsed
+        assert parsed["result"] == "ok", parsed
+        # Exactly 2 RPCs: the one that lost the child, and the successful replay.
+        assert calls["n"] == 2, f"expected 2 RPCs, got {calls['n']}"
+        assert server._reconnect_event.set_calls == 1
+        # Retry succeeded: no breaker strike.
+        assert mcp_tool._server_error_counts.get("srv-cold", 0) == 0
+        # _mark_session_proven was invoked by the successful replay path.
+        assert server._mark_session_proven.called
+    finally:
+        _cleanup(mcp_tool, "srv-cold")

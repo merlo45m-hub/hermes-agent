@@ -7,10 +7,13 @@ workflows with handoffs and consensus loops.
 
 import os
 import json
+import logging
 import subprocess
 import shutil
 from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, END
+
+log = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
@@ -25,6 +28,9 @@ class AgentState(TypedDict):
     retries: int
     max_retries: int
     mcp_tools_used: list[str]
+    # Which backend actually answered the execute node (the assigned agent is
+    # not always the one that ran, because of the fallback chain).
+    executor_agent: str
 
 
 # Agent routing table: task type -> agent
@@ -49,12 +55,32 @@ TASK_KEYWORDS = {
     "review": ["review", "verify", "test", "audit", "check"],
 }
 
-# Agent binary paths
+# Agent binary paths.
+# agy runs on the VPS: the phone's agy port (1.3.5) cannot resolve DNS because
+# the proot has no /etc/resolv.conf and /etc is a read-only symlink to
+# /system/etc, so glibc's resolver falls back to [::1]:53. agy-vps forwards the
+# prompt over the vps-mcp bridge with shell quoting preserved.
 AGENT_BINARIES = {
-    "agy": "/data/data/com.termux/files/usr/bin/agy",
+    "agy": "/data/data/com.termux/files/home/bin/agy-vps",
     "codex": "/data/data/com.termux/files/usr/bin/codex",
     "claude": "/data/data/com.termux/files/usr/bin/claude",
 }
+
+# Preferred order for the consensus reviewer and for dispatch fallbacks.
+# claude is the only backend that currently works reliably on the phone: agy
+# cannot resolve DNS (the proot has no /etc/resolv.conf, and /etc is read-only)
+# and codex waits on stdin in this invocation form.
+_FALLBACK_ORDER = ("claude", "codex", "agy")
+
+# Per-backend attempt budget. agy runs on the VPS over ssh, so it needs a
+# materially larger window than the local backends. The worst-case sum must stay
+# under the orchestrate tool's 420s cap, or a hung agy takes the whole call down
+# instead of failing cleanly to the fallbacks: 200 + 80 + 90 = 370s.
+_AGENT_TIMEOUTS = {"agy": 200, "codex": 80, "claude": 90}
+
+# Records which backend actually answered the most recent dispatch (the assigned
+# agent is not always the one that ran). Read by the L5 evidence marker writer.
+LAST_EFFECTIVE_AGENT = None
 
 # MCP tool routing: which tools each agent can use
 AGENT_MCP_TOOLS = {
@@ -79,37 +105,70 @@ def route_to_agent(task_type: str) -> str:
     return AGENT_ROUTING.get(task_type, AGENT_ROUTING["default"])
 
 
-def dispatch_agent(agent: str, task: str, timeout: int = 300) -> str:
-    """Dispatch a task to an agent via subprocess."""
+def _agent_cmd(agent: str, task: str):
+    """Build the command line for one agent, or None if it is unavailable."""
     binary = AGENT_BINARIES.get(agent)
     if not binary or not os.path.exists(binary):
-        return f"[ERROR] Agent binary not found: {agent} ({binary})"
-
+        return None
     if agent == "agy":
-        cmd = [binary, "--print", task, "--dangerously-skip-permissions"]
-    elif agent == "codex":
-        cmd = [binary, "exec", "--skip-git-repo-check", task]
-    elif agent == "claude":
-        cmd = [binary, "-p", task, "--allowedTools", "WebSearch WebFetch Read"]
-    else:
-        return f"[ERROR] Unknown agent: {agent}"
+        # agy-vps takes the prompt as its single argument and forwards it to the
+        # VPS build over ssh with shell quoting preserved.
+        return [binary, task]
+    if agent == "codex":
+        return [binary, "exec", "--skip-git-repo-check", task]
+    if agent == "claude":
+        return [binary, "-p", task, "--allowedTools", "WebSearch WebFetch Read",
+                "--dangerously-skip-permissions"]
+    return None
 
+
+def _dispatch_once(agent: str, task: str, timeout: int) -> tuple:
+    """Run one agent. Returns (ok, output); ok is False on any failure mode."""
+    cmd = _agent_cmd(agent, task)
+    if cmd is None:
+        return False, f"[ERROR] Agent binary not found: {agent}"
     try:
         result = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
             cwd="/data/data/com.termux/files/home",
         )
-        output = result.stdout.strip()
-        if result.returncode != 0:
-            output += f"\n[STDERR] {result.stderr.strip()}"
-        return output if output else "[No output]"
     except subprocess.TimeoutExpired:
-        return f"[TIMEOUT] Agent {agent} exceeded {timeout}s"
+        return False, f"[TIMEOUT] Agent {agent} exceeded {timeout}s"
     except Exception as e:
-        return f"[ERROR] {e}"
+        return False, f"[ERROR] {e}"
+    output = result.stdout.strip()
+    stderr = result.stderr.strip()
+    if result.returncode != 0 or not output or stderr:
+        combined = (output + f"\n[STDERR] {stderr}").strip()
+        return False, combined or f"[ERROR] {agent} exited with code {result.returncode}"
+    return True, output
+
+
+def dispatch_agent(agent: str, task: str, timeout: int = 120) -> str:
+    """Dispatch a task to the assigned agent, falling back to the others.
+
+    No single backend is dependable on the phone: agy cannot resolve DNS (the
+    proot has no /etc/resolv.conf and /etc is read-only), codex waits on stdin in
+    this invocation form, and claude is the only one that answers reliably. So a
+    failed or empty attempt falls through to the next agent instead of failing
+    the whole orchestration.
+    """
+    global LAST_EFFECTIVE_AGENT
+    order = [agent] + [a for a in _FALLBACK_ORDER if a != agent]
+    last = ""
+    for attempt in order:
+        ok, output = _dispatch_once(attempt, task, _AGENT_TIMEOUTS.get(attempt, timeout))
+        if ok:
+            LAST_EFFECTIVE_AGENT = attempt
+            if attempt != agent:
+                log.warning("dispatch_agent: %s produced nothing, fell back to %s", agent, attempt)
+            return output
+        last = output
+    return last or f"[ERROR] no agent available for {agent}"
 
 
 def call_mcp_tool(server: str, tool: str, args: dict = None) -> str:
@@ -192,25 +251,26 @@ def execute_node(state: AgentState) -> AgentState:
     if mcp_tools:
         tool_context = f"\n\nAvailable MCP tools: {', '.join(mcp_tools)}. Use these for data access."
 
-    prompt = f"Task: {task}\nPlan: {plan}{tool_context}\n\nExecute this task and report what you did."
+    prompt = f"Task: {task}\nPlan: {plan}{tool_context}\n\nExecute this task and report what you did in detail."
 
-    output = dispatch_agent(agent, prompt, timeout=120)
+    output = dispatch_agent(agent, prompt, timeout=100)
     return {
         **state,
         "agent_output": output,
         "status": "verifying",
+        "executor_agent": LAST_EFFECTIVE_AGENT or agent,
     }
 
 
 def verify_node(state: AgentState) -> AgentState:
     """Verify the agent's output."""
     output = state["agent_output"]
-    # Check for errors in output
-    has_error = "[ERROR]" in output or "[TIMEOUT]" in output
-    # Check for meaningful content
-    has_content = len(output) > 50 and "[No output]" not in output
+    # A correct short answer is still a correct answer: reject only error
+    # markers and genuinely empty output, not brevity.
+    has_error = any(m in output for m in ("[ERROR]", "[TIMEOUT]", "[No output]"))
+    has_content = bool(output.strip()) and not has_error
 
-    passed = not has_error and has_content
+    passed = has_content
     return {
         **state,
         "verification_result": "PASS" if passed else "FAIL",
@@ -223,17 +283,18 @@ def consensus_node(state: AgentState) -> AgentState:
     agent = state["assigned_agent"]
     output = state["agent_output"]
 
-    # Pick a different agent for review
-    reviewers = [a for a in AGENT_BINARIES if a != agent]
+    # Pick a different agent for review, preferring responsive verification agents
+    reviewers = [a for a in _FALLBACK_ORDER if a != agent and os.path.exists(AGENT_BINARIES.get(a, ""))]
     reviewer = reviewers[0] if reviewers else "claude"
 
     review_prompt = (
+        f"Task: {state['task']}\n"
         f"Review this work output and say APPROVE or REJECT with reason.\n"
         f"Agent: {agent}\nOutput:\n{output[:2000]}\n\n"
         f"Respond with exactly: APPROVE: <reason> or REJECT: <reason>"
     )
 
-    review_output = dispatch_agent(reviewer, review_prompt, timeout=60)
+    review_output = dispatch_agent(reviewer, review_prompt, timeout=90)
     approved = "APPROVE" in review_output.upper()
 
     votes = state.get("consensus_votes", [])
@@ -309,6 +370,7 @@ def run_orchestration(task: str, max_retries: int = 2) -> dict:
         "retries": 0,
         "max_retries": max_retries,
         "mcp_tools_used": [],
+        "executor_agent": "",
     }
 
     result = app.invoke(initial_state)

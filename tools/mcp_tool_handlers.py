@@ -287,6 +287,7 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
         return None
     reconnected = False
     srv = _lookup_reconnectable_server(server_name)
+    was_proven = getattr(srv, "_session_proven", False) if srv is not None else False
     if srv is not None:
         action = "reconnecting without replay" if exc.in_flight else "respawning and retrying once"
         logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); %s.",
@@ -297,6 +298,32 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
         else:  # No MCP loop to wait on (non-async adapters, tests): still request the respawn.
             _loop._signal_reconnect(srv)
     if exc.in_flight:
+        # Cold start: the session never proved healthy, so no prior call could have had
+        # a side effect. One replay after the respawned child returns is safe — the
+        # retry succeeds once the child is settled, instead of surfacing "lost its
+        # stdio subprocess" to the user on first use. A proven session keeps the
+        # at-most-once guarantee (no replay of a possibly-completed write).
+        if reconnected and not was_proven:
+            try:
+                return _record_call_outcome(server_name, retry_call())
+            except _StdioChildExited as retry_exc:
+                # Died again right after respawn: broken server; run()'s budget parks it.
+                logger.warning("MCP server '%s': %s stdio subprocess exited again right after "
+                               "cold-start respawn (%s); not retrying further.",
+                               server_name, op_description, retry_exc)
+                if retry_exc.in_flight:
+                    return _strike(
+                        server_name,
+                        _STDIO_OUTCOME_UNCERTAIN_MSG.format(s=server_name),
+                        outcome_uncertain=True,
+                    )
+                return _strike(server_name, _STDIO_DIED_AGAIN_MSG.format(s=server_name))
+            except Exception as retry_exc:
+                logger.warning("MCP %s/%s cold-start retry after stdio respawn failed: %s",
+                               server_name, op_description, retry_exc)
+                return _strike(server_name, _sanitize_error(
+                    f"MCP call failed after respawning the stdio subprocess for '{server_name}': "
+                    f"{type(retry_exc).__name__}: {_exc_str(retry_exc)}"))
         return _strike(
             server_name,
             _STDIO_OUTCOME_UNCERTAIN_MSG.format(s=server_name),

@@ -470,7 +470,8 @@ class Venv(StatePackage):
                 recorded = Path(prior["resolved_lock"]).resolve()
                 previous = Path(prior["environment"]).resolve().parent
                 generations = install_state_dir(project) / "environments"
-                if (previous.parent != generations.resolve() or recorded != previous / "workspace" / "uv.lock"
+                if (previous.parent != generations.resolve()
+                        or recorded != (previous / "workspace" / "uv.lock").resolve()
                         or not recorded.is_file()):
                     raise InstallError(self.name, "recorded dependency lock is missing; refusing to drop plugins")
                 replay = recorded.parent

@@ -41,6 +41,64 @@ def get_lifecycle_sentinel_path(home: Optional[Path] = None) -> Path:
     return _home_path(home, "state", "gateway.lifecycle.json")
 
 
+def get_pending_unclean_exit_path(home: Optional[Path] = None) -> Path:
+    """Staged Phoenix diagnostic for a death that could not emit a span itself."""
+    return _home_path(home, "state", "gateway.pending_unclean_exit.json")
+
+
+def _stage_unclean_exit_span(evidence: dict[str, Any], home: Optional[Path]) -> None:
+    """A SIGKILL/OOM emits no span at the instant of death. ``record_startup`` runs
+    BEFORE the OTLP monitoring subscriber is attached, so stage the ERROR diagnostic
+    to disk and let :func:`flush_unclean_exit_span` emit it once the streamer exists.
+    Best-effort; forensics must never affect the lifecycle.
+    """
+    try:
+        mem = evidence.get("last_heartbeat_mem") or {}
+        payload: dict[str, Any] = {
+            "event": "gateway_diagnostic",
+            "name": "gateway.unclean_exit",
+            "subsystem": "gateway.lifecycle",
+            "error_class": "SuspectedOOM" if evidence.get("suspected_oom") else "UncleanExit",
+            "error_code": "E_UNCLEAN_EXIT",
+            "severity": "error",
+            "prior_pid": evidence.get("prior_pid"),
+            "suspected_oom": bool(evidence.get("suspected_oom", False)),
+        }
+        for key in ("rss_kib", "mem_total_kib", "mem_available_kib", "swap_used_kib"):
+            value = mem.get(key)
+            if isinstance(value, int):
+                payload[key] = value
+        path = get_pending_unclean_exit_path(home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        logger.debug("failed to stage unclean-exit diagnostic", exc_info=True)
+
+
+def flush_unclean_exit_span(home: Optional[Path] = None) -> bool:
+    """Emit + consume a staged unclean-exit diagnostic. Call after the OTLP streamer
+    is attached. Returns True when an event was emitted.
+    """
+    path = get_pending_unclean_exit_path(home)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        from agent.monitoring import emitter
+        emitter.get_emitter().emit(json.loads(raw))
+        return True
+    except Exception:
+        logger.debug("failed to emit staged unclean-exit diagnostic", exc_info=True)
+        return False
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -306,6 +364,9 @@ def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path], *, defe
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )
+    # Stage the Phoenix ERROR diagnostic: the death itself emitted no span, and
+    # the monitoring streamer is not attached this early in startup.
+    _stage_unclean_exit_span(evidence, home)
 
 
 def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool = True) -> Optional[dict[str, Any]]:

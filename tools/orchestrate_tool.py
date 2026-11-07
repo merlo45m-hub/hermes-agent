@@ -83,7 +83,7 @@ async def orchestrate_handler(args: dict, **kw) -> str:
 
 registry.register(
     name="orchestrate",
-    toolset="core",
+    toolset="delegation",
     schema=ORCHESTRATE_SCHEMA,
     handler=orchestrate_handler,
     is_async=True,

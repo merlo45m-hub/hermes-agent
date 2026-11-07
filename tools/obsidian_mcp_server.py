@@ -153,6 +153,28 @@ def _handle(req):
     method = req.get("method")
     params = req.get("params") or {}
     rid = req.get("id")
+    if method == "initialize":
+        # Echo the client's offered protocol version so the SDK's handshake
+        # accepts the result; expose the tools capability.
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "protocolVersion": params.get("protocolVersion") or "2025-06-18",
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "obsidian", "version": "1.0.0"},
+            },
+        }
+    if method in ("notifications/initialized", "initialized", "notifications/cancelled"):
+        return None  # notification: no response
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": rid, "result": {}}
+    if method == "server/discover":
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {"capabilities": {"tools": {"listChanged": False}}},
+        }
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}}
     if method == "tools/call":
@@ -173,7 +195,7 @@ def _handle(req):
                 raise ValueError("unknown tool " + str(name))
         except ValueError as exc:
             return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": str(exc)}}
-        return {"jsonrpc": "2.0", "id": rid, "result": result}
+        return {"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}}
 
 
@@ -188,6 +210,8 @@ def main():
             resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
         else:
             resp = _handle(req)
+        if resp is None:
+            continue  # notification: nothing to send
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
 

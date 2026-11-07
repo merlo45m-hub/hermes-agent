@@ -1,0 +1,122 @@
+engine:
+  articulate_mode: always
+  include_context: true
+  memory_mode: first_turn
+  profile: general
+  cache_max_entries: 1000
+default_profile: game
+profiles:
+  game:
+    aliases:
+      9mm: pistol
+      aid: medkit
+      ak: rifle
+      ammunition: ammo
+      ar: rifle
+      assault: rifle
+      assault rifle: rifle
+      bandage: medkit
+      baseball: bat
+      baseball bat: bat
+      batteries: battery
+      beam sword: lightsaber
+      blade: knife
+      boomstick: shotgun
+      borger: burger
+      bullets: ammo
+      cappuccino: coffee
+      cheeseburger: burger
+      chips: fries
+      club: bat
+      cola: soda
+      crisps: takis
+      dagger: knife
+      doughnut: donut
+      drink: soda
+      espresso: coffee
+      fire axe: axe
+      fire gun: firegun
+      first aid: medkit
+      fist: fists
+      flame gun: firegun
+      flamethrower: firegun
+      french fries: fries
+      glock: pistol
+      gun: pistol
+      hamburger: burger
+      hand: fists
+      handgun: pistol
+      hands: fists
+      hatchet: axe
+      health pack: medkit
+      laser sword: lightsaber
+      latte: coffee
+      light saber: lightsaber
+      maki: sushi
+      med kit: medkit
+      pop: soda
+      power cell: battery
+      pump: shotgun
+      punch: fists
+      roll: sushi
+      saber: lightsaber
+      scattergun: shotgun
+      shells: ammo
+      shot gun: shotgun
+      sidearm: pistol
+      slice: pizza
+      stick: bat
+      taki: takis
+      unarmed: fists
+      water: soda
+    confidence_threshold: 0.65
+    suggested_actions:
+      ATTACK:
+      - RELOAD
+      - SWITCH_WEAPON
+      - SPRINT
+      DEFAULT:
+      - ATTACK
+      - SWITCH_WEAPON
+      - RELOAD
+      - JUMP
+      - SPRINT
+      EAT_FOOD:
+      - ATTACK
+      - SPRINT
+      MOVE:
+      - ATTACK
+      - JUMP
+      - SPRINT
+      SWITCH_WEAPON:
+      - ATTACK
+      - RELOAD
+    valid_commands:
+    - ATTACK
+    - JUMP
+    - SPRINT
+    - MOVE
+    - SWITCH_WEAPON
+    - USE_SPECIAL
+    - EAT_FOOD
+    - INTERACT
+    - RELOAD
+  general:
+    aliases: {}
+    confidence_threshold: 0.6
+    suggested_actions:
+      DEFAULT:
+      - help
+      - summary
+      - next
+    valid_commands: []
+  terminal:
+    aliases: {}
+    confidence_threshold: 0.7
+    suggested_actions:
+      DEFAULT:
+      - status
+      - build
+      - run
+      - logs
+    valid_commands: []

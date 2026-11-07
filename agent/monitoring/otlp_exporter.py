@@ -100,11 +100,19 @@ _SIGNAL_SUFFIXES = ("/v1/traces", "/v1/metrics")
 
 
 def _signal_endpoint(endpoint: str, signal: str) -> str:
-    """Rewrite a traces/metrics OTLP path to ``/v1/<signal>``; other paths pass through."""
+    """Expand a base OTLP URL to ``<base>/v1/<signal>``; full paths pass through.
+
+    The OTLP HTTP exporters expect the full signal-path URL
+    (``.../v1/traces`` etc.). A bare base URL like ``http://host:port`` is
+    expanded here so exports are POSTed to ``/v1/<signal>`` instead of the
+    root path, which collectors reject with HTTP 405.
+    """
     target = f"/v1/{signal}"
     for suffix in _SIGNAL_SUFFIXES:
         if suffix != target and endpoint.endswith(suffix):
             return endpoint[: -len(suffix)] + target
+    if not endpoint.endswith(target):
+        return endpoint.rstrip("/") + target
     return endpoint
 
 
@@ -154,7 +162,18 @@ def build_exporter(config: dict[str, Any]):
     endpoint = otlp.get("endpoint")
     if not endpoint:
         raise ValueError("monitoring.export.otlp.endpoint is not set")
-    return sdk["OTLPSpanExporter"](endpoint=endpoint, headers=_resolve_headers(otlp.get("headers_env")) or None)
+    # A tunnel hiccup used to produce a 20+ minute span blackout: the default
+    # exporter timeout is short and the exporter gives up on the batch. Make it
+    # operator-tunable so spans survive a slow WireGuard link.
+    try:
+        timeout_s = max(1.0, float(otlp.get("timeout_seconds", 30)))
+    except (TypeError, ValueError):
+        timeout_s = 30.0
+    return sdk["OTLPSpanExporter"](
+        endpoint=_signal_endpoint(str(endpoint), "traces"),
+        headers=_resolve_headers(otlp.get("headers_env")) or None,
+        timeout=timeout_s,
+    )
 
 
 def _resource_attributes(config: dict[str, Any]) -> dict[str, str]:
@@ -175,9 +194,24 @@ _KEEP_BY_KIND: dict[str, tuple[str, ...]] = {
     "gateway_health": (
         "name", "gateway_state", "old_state", "new_state", "exit_reason", "restart_requested", "active_agents",
         "gateway_busy", "gateway_drainable", "platform_count", "fatal_platform_count", "version", "supervision_mode", "pid",
+        # Process + system memory: the numbers that let a Phoenix postmortem tell
+        # an OOM/LMK kill from a clean exit (see the lifecycle ledger's last_mem).
+        "rss_kib", "mem_total_kib", "mem_available_kib", "swap_used_kib",
     ),
-    "gateway_diagnostic": ("name", "subsystem", "error_class", "error_code", "platform", "old_state", "new_state", "version", "severity"),
+    "gateway_diagnostic": (
+        "name", "subsystem", "error_class", "error_code", "platform", "old_state", "new_state",
+        "version", "severity", "prior_pid", "suspected_oom", "prompt_tokens",
+        "max_context_tokens", "api_call", "rss_kib", "mem_total_kib",
+        "mem_available_kib", "swap_used_kib",
+    ),
     "cron_execution": ("status", "job_key", "source", "duration_ms", "delivery_outcome", "error_class"),
+    # One span per model API call. Content-free: model/provider + token buckets +
+    # latency only. Makes runaway context growth (e.g. an 850k-token agent loop)
+    # visible in Phoenix instead of only in local logs.
+    "llm_turn": (
+        "model", "provider", "api_call", "input_tokens", "output_tokens", "total_tokens",
+        "cache_read_tokens", "cache_write_tokens", "latency_ms", "status",
+    ),
 }
 
 
@@ -199,13 +233,38 @@ def _span_attrs(ev: dict[str, Any]) -> dict[str, Any]:
     return attrs
 
 
+def _event_error_message(ev: dict[str, Any]) -> Optional[str]:
+    """Bounded status message for events that should surface as ERROR spans.
+
+    A hard SIGKILL emits no span, but the warning/error diagnostics around it
+    (and failed LLM calls) should be visually flagged in Phoenix rather than
+    arriving as UNSET spans indistinguishable from a healthy heartbeat.
+    """
+    kind = ev.get("event")
+    if kind == "gateway_diagnostic" and str(ev.get("severity", "")).lower() in (
+        "error", "fatal", "critical"
+    ):
+        return f"{ev.get('name') or 'gateway_diagnostic'}: {ev.get('error_class') or 'unknown'}"
+    if kind == "llm_turn" and str(ev.get("status", "ok")) != "ok":
+        return f"llm_turn: {ev.get('status')}"
+    return None
+
+
 def export_batch(provider, batch: list[dict[str, Any]]) -> int:
     """Map a batch of events to OTel spans. Returns spans created."""
     tracer = provider.get_tracer("hermes.monitoring")
     n = 0
     for ev in batch:
         try:
-            tracer.start_span(f"hermes.{ev.get('event', 'event')}", attributes=_span_attrs(ev)).end()
+            span = tracer.start_span(f"hermes.{ev.get('event', 'event')}", attributes=_span_attrs(ev))
+            err = _event_error_message(ev)
+            if err is not None:
+                try:
+                    from opentelemetry.trace import Status, StatusCode
+                    span.set_status(Status(StatusCode.ERROR, err[:256]))
+                except ImportError:
+                    pass
+            span.end()
             n += 1
         except Exception:
             logger.debug("OTLP span map failed", exc_info=True)

@@ -45,6 +45,15 @@ def _loop_mod():
     return _cl
 
 
+def _emit_llm_turn(**kwargs) -> None:
+    """Fire-and-forget LLM-turn telemetry. Never raises into the turn loop."""
+    try:
+        from agent.monitoring.llm_turn_export import emit_llm_turn
+        emit_llm_turn(**kwargs)
+    except Exception:  # pragma: no cover - observability must not break the turn
+        logger.debug("llm_turn telemetry emit failed", exc_info=True)
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when
@@ -95,6 +104,11 @@ def record_response_usage(
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
+        )
+        _emit_llm_turn(
+            model=agent.model, provider=agent.provider or "unknown",
+            api_call=agent.session_api_calls, latency_ms=int(api_duration * 1000),
+            status="usage_unavailable",
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
@@ -167,6 +181,14 @@ def record_response_usage(
     # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
     agent._last_prompt_size_tokens = int(context_prompt_tokens or aggregator_usage.prompt_tokens or 0)
 
+    # Runaway-turn guard: an unbounded autonomous loop is what drove the phone into
+    # memory pressure before the 2026-11-07 LMK kill. Stop it at the context ceiling.
+    try:
+        from agent.run_guard import enforce_context_ceiling
+        enforce_context_ceiling(agent, messages, prompt_tokens)
+    except Exception:
+        logger.debug("run guard invocation failed", exc_info=True)
+
     # Persist only provider-confirmed context lengths, not probe tiers.
     if getattr(compressor, "_context_probed", False):
         ctx = compressor.context_length
@@ -214,6 +236,14 @@ def record_response_usage(
         agent.session_api_calls, agent.model, agent.provider or "unknown",
         prompt_tokens, completion_tokens, total_tokens,
         api_duration, _cache_pct, _ident,
+    )
+    _emit_llm_turn(
+        model=agent.model, provider=agent.provider or "unknown",
+        api_call=agent.session_api_calls, latency_ms=int(api_duration * 1000),
+        input_tokens=prompt_tokens, output_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cache_read_tokens=canonical_usage.cache_read_tokens,
+        cache_write_tokens=canonical_usage.cache_write_tokens,
     )
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":

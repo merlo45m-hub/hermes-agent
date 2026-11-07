@@ -1,330 +1,266 @@
-"""Configurable Voice Context Engine (Layer 1, Phase 4).
-
-Customizable to the user's architecture:
-- Per-application context profiles (game, terminal, general)
-- Mnemosyne working memory integration
-- Configurable artifact mappings, valid commands, thresholds
-- Context providers (game state, Mnemosyne, tool context)
-
-Configuration via ~/.hermes/voice_context_config.yaml or environment variables.
+"""
+voice_context_engine.py — Conversational context engine for Layer 1.
+Supports game (Muakbank), terminal, and general profiles with state management,
+aliases, YAML configuration, and Mnemosyne working memory integration.
 """
 
-from __future__ import annotations
-
-import json
-import logging
+import copy
 import os
+import sqlite3
 import sys
-from dataclasses import dataclass, field, asdict
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import yaml
 
-logger = logging.getLogger(__name__)
+# Resolve MCP servers directory to import VoiceInputProcessor domain data
+if "/root/mcp-servers" not in sys.path:
+    sys.path.insert(0, "/root/mcp-servers")
 
-CONFIG_PATH = os.path.expanduser("~/.hermes/voice_context_config.yaml")
+# --- Host-portable paths. The same plugin runs on the phone (Termux, HOME
+# under /data/data/com.termux/files/home) and on the VPS (HOME=/root). Resolve
+# the config and Mnemosyne DB against the actual HOME so the context engine
+# pulls real memory on BOTH hosts instead of silently degrading to empty.
+_HOME = Path(os.environ.get("HOME", "/root"))
 
-DEFAULT_CONFIG = {
-    "active_profile": "game",
-    "profiles": {
-        "game": {
-            "name": "Game (Muakbank Zombie)",
-            "valid_commands": ["attack", "switch", "reload", "heal", "sprint", "equip", "fire", "open", "use"],
-            "artifact_mappings": {
-                "mk deer": "mkdir",
-                "pie thon": "python",
-                "shot gun": "shotgun",
-                "med kit": "medkit",
-                "re load": "reload",
-                "heal th": "heal",
-            },
-            "destructive_commands": ["rm", "rmdir", "chmod", "sudo", "mkfs", "dd", "format", "del"],
-            "confidence_threshold": 0.65,
-            "context_sources": ["game_state", "mnemosyne"],
-        },
-        "terminal": {
-            "name": "Terminal/Shell",
-            "valid_commands": [],
-            "artifact_mappings": {
-                "mk deer": "mkdir",
-                "pie thon": "python",
-                "cd dot": "cd ..",
-                "less s": "ls",
-            },
-            "destructive_commands": ["rm", "rmdir", "chmod", "sudo", "mkfs", "dd", "format", "del", "kill"],
-            "confidence_threshold": 0.70,
-            "context_sources": ["shell_state", "mnemosyne"],
-        },
-        "general": {
-            "name": "General Purpose",
-            "valid_commands": [],
-            "artifact_mappings": {},
-            "destructive_commands": ["rm", "rmdir", "chmod", "sudo", "mkfs", "dd", "format", "del"],
-            "confidence_threshold": 0.60,
-            "context_sources": ["mnemosyne"],
+CONFIG_PATH = os.environ.get(
+    "LAYER1_CONFIG_PATH",
+    str(Path(__file__).resolve().parent / "voice_context_config.yaml"),
+)
+MNEMOSYNE_DB_PATH = os.environ.get(
+    "LAYER1_MNEMOSYNE_DB",
+    str(_HOME / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"),
+)
+
+try:
+    from VoiceInputProcessor import (
+        WEAPONS,
+        WEAPON_ALIASES,
+        FOODS,
+        FOOD_ALIASES,
+        SPECIAL_ABILITIES,
+        TARGET_TYPES,
+        TARGET_ALIASES,
+    )
+except ImportError:
+    WEAPONS = [
+        "fists", "bat", "knife", "pistol", "shotgun", "rifle",
+        "axe", "lightsaber", "firegun", "medkit"
+    ]
+    WEAPON_ALIASES = {
+        "gun": "pistol",
+        "boomstick": "shotgun",
+        "ar": "rifle",
+        "ak": "rifle",
+        "sidearm": "pistol",
+    }
+    FOODS = ["burger", "pizza", "fries", "soda", "sushi", "takis"]
+    FOOD_ALIASES = {"borger": "burger", "cola": "soda"}
+    SPECIAL_ABILITIES = ["rage", "shield", "stealth", "heal", "special"]
+    TARGET_TYPES = ["zombie", "boss", "dog", "cat", "runner", "spitter"]
+    TARGET_ALIASES = {"undead": "zombie"}
+
+
+PROFILES: Dict[str, Dict[str, Any]] = {
+    "game": {
+        "confidence_threshold": 0.65,
+        "valid_commands": [
+            "ATTACK",
+            "JUMP",
+            "SPRINT",
+            "MOVE",
+            "SWITCH_WEAPON",
+            "USE_SPECIAL",
+            "EAT_FOOD",
+            "INTERACT",
+            "RELOAD",
+        ],
+        "aliases": {**WEAPON_ALIASES, **FOOD_ALIASES},
+        "suggested_actions": {
+            "ATTACK": ["RELOAD", "SWITCH_WEAPON", "SPRINT"],
+            "SWITCH_WEAPON": ["ATTACK", "RELOAD"],
+            "EAT_FOOD": ["ATTACK", "SPRINT"],
+            "MOVE": ["ATTACK", "JUMP", "SPRINT"],
+            "DEFAULT": ["ATTACK", "SWITCH_WEAPON", "RELOAD", "JUMP", "SPRINT"],
         },
     },
-    "mnemosyne": {
-        "enabled": True,
-        "working_memory_keys": ["current_task", "current_location", "current_weapon"],
-        "recall_limit": 5,
+    "terminal": {
+        "confidence_threshold": 0.70,
+        "valid_commands": [],  # no command filter
+        "aliases": {},
+        "suggested_actions": {
+            "DEFAULT": ["status", "build", "run", "logs"],
+        },
     },
-    "rewriter": {
-        "enabled": True,
-        "primary_provider": "nvidia_nim",
-        "fallback_provider": "openrouter",
-        "temperature": 0,
-        "max_tokens": 100,
-        "reasoning_effort": "none",
-        "timeout_seconds": 10,
-        "max_retries": 1,
-        "cache_enabled": True,
+    "general": {
+        "confidence_threshold": 0.60,
+        "valid_commands": [],  # no filtering
+        "aliases": {},
+        "suggested_actions": {
+            "DEFAULT": ["help", "summary", "next"],
+        },
     },
 }
 
 
-@dataclass
-class GameContext:
-    """Current application state for context-aware voice processing."""
-
-    current_weapon: str = ""
-    current_location: str = ""
-    current_health: int = 100
-    current_task: str = ""
-    last_command: str = ""
-    current_directory: str = ""
-    current_tool: str = ""
-    valid_commands: list[str] = field(default_factory=list)
-    working_memory: dict[str, Any] = field(default_factory=dict)
-
-
-class ContextEngine:
-    """Configurable context engine for voice input sanitization."""
-
-    def __init__(self, config: dict = None):
-        self.config = config or self._load_config()
-        self._context = GameContext()
-        self._profile_name = self.config.get("active_profile", "game")
-        self._profile = self.config["profiles"].get(self._profile_name, self.config["profiles"]["general"])
-        self._mnemosyne_enabled = self.config.get("mnemosyne", {}).get("enabled", False)
-        self._rewriter_enabled = self.config.get("rewriter", {}).get("enabled", True)
-
-    def _load_config(self) -> dict:
-        try:
-            import yaml
-            if os.path.exists(CONFIG_PATH):
-                with open(CONFIG_PATH) as f:
-                    loaded = yaml.safe_load(f)
-                if loaded:
-                    merged = DEFAULT_CONFIG.copy()
-                    merged.update(loaded)
-                    return merged
-        except ImportError:
-            logger.warning("PyYAML not available, using default config")
-        except Exception as e:
-            logger.warning("Failed to load config: %s, using defaults", e)
-        return DEFAULT_CONFIG.copy()
-
-    def save_config(self) -> None:
-        try:
-            import yaml
-            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-            with open(CONFIG_PATH, "w") as f:
-                yaml.dump(self.config, f, default_flow_style=False, sort_keys=False)
-            logger.info("Config saved to %s", CONFIG_PATH)
-        except ImportError:
-            logger.warning("PyYAML not available, cannot save config")
-        except Exception as e:
-            logger.warning("Failed to save config: %s", e)
-
-    @property
-    def profile(self) -> dict:
-        return self._profile
-
-    @property
-    def profile_name(self) -> str:
-        return self._profile_name
-
-    def switch_profile(self, name: str) -> bool:
-        if name in self.config["profiles"]:
-            self._profile_name = name
-            self._profile = self.config["profiles"][name]
-            self.config["active_profile"] = name
-            logger.info("Switched to profile: %s", name)
-            return True
-        logger.warning("Unknown profile: %s", name)
-        return False
-
-    def set_context(self, **kwargs) -> None:
-        for key, value in kwargs.items():
-            if hasattr(self._context, key):
-                setattr(self._context, key, value)
-            else:
-                self._context.working_memory[key] = value
-
-    def get_context(self) -> GameContext:
-        return self._context
-
-    def reset_context(self) -> None:
-        self._context = GameContext()
-
-    def build_context_prompt(self) -> str:
-        ctx = self._context
-        parts = []
-        if ctx.current_weapon:
-            parts.append(f"Current weapon: {ctx.current_weapon}")
-        if ctx.current_location:
-            parts.append(f"Current location: {ctx.current_location}")
-        if ctx.current_health < 100:
-            parts.append(f"Health: {ctx.current_health}%")
-        if ctx.current_task:
-            parts.append(f"Current task: {ctx.current_task}")
-        if ctx.last_command:
-            parts.append(f"Last command: {ctx.last_command}")
-        if ctx.current_directory:
-            parts.append(f"Current directory: {ctx.current_directory}")
-        if ctx.current_tool:
-            parts.append(f"Active tool: {ctx.current_tool}")
-        vcs = ctx.valid_commands or self._profile.get("valid_commands", [])
-        if vcs:
-            parts.append(f"Valid commands: {', '.join(vcs)}")
-        if ctx.working_memory:
-            for key, value in ctx.working_memory.items():
-                parts.append(f"{key}: {value}")
-        if self._mnemosyne_enabled:
+def _fetch_mnemosyne_context(db_path: str = MNEMOSYNE_DB_PATH) -> List[str]:
+    """
+    Pull the latest *fact-like* working-memory entries (tasks, insights, facts).
+    Raw conversation logs are skipped — they are already in the chat history and
+    injecting them every turn is pure token waste. Graceful empty on failure.
+    """
+    memory_rows: List[str] = []
+    try:
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path, timeout=1.0)
             try:
-                mnemo_ctx = self._pull_mnemosyne_context()
-                if mnemo_ctx:
-                    parts.append(f"Mnemosyne context: {mnemo_ctx}")
-            except Exception as e:
-                logger.debug("Mnemosyne context pull failed: %s", e)
-        return "\n".join(parts) if parts else "No context available"
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT content FROM working_memory "
+                    "WHERE content NOT LIKE '[USER]%' "
+                    "AND content NOT LIKE '[conversation]%' "
+                    "AND content NOT LIKE '[builtin_memory%' "
+                    "AND content NOT LIKE '[assistant]%' "
+                    "ORDER BY created_at DESC LIMIT 3"
+                )
+                for r in cur.fetchall():
+                    if r and r[0]:
+                        memory_rows.append(str(r[0]).strip()[:160])
+            finally:
+                conn.close()
+    except Exception:
+        # Gracefully handle unreachable DB / permissions
+        pass
+    return memory_rows
 
-    def _pull_mnemosyne_context(self) -> str:
-        try:
-            import mnemosyne
-            return None
-        except ImportError:
-            return None
 
-    def is_artifact(self, text: str) -> bool:
-        mappings = self._profile.get("artifact_mappings", {})
-        return text.lower().strip() in mappings
+class VoiceContextEngine:
+    """
+    Conversational context engine managing execution profiles,
+    domain vocabulary aliases, system state, and memory context.
+    """
 
-    def get_suggestion(self, text: str) -> str:
-        mappings = self._profile.get("artifact_mappings", {})
-        return mappings.get(text.lower().strip())
+    def __init__(
+        self,
+        config_path: str = CONFIG_PATH,
+        default_profile: str = "game",
+    ):
+        self.config_path = config_path
+        self.profiles = copy.deepcopy(PROFILES)
+        self.current_profile = default_profile
+        self.state: Dict[str, Any] = {}
+        self.history: List[Dict[str, Any]] = []
 
-    def is_destructive(self, command: str) -> bool:
-        destructive = self._profile.get("destructive_commands", [])
-        cmd_lower = command.lower().strip()
-        for dc in destructive:
-            if cmd_lower.startswith(dc) or f" {dc} " in cmd_lower or f" {dc}\t" in cmd_lower:
-                return True
-        return False
+        self._load_or_create_config()
 
-    def validate_command(self, command: str) -> bool:
-        if not command or not command.strip():
-            return False
-        vcs = self._context.valid_commands or self._profile.get("valid_commands", [])
-        if vcs:
-            cmd_base = command.strip().split()[0].lower()
-            if cmd_base not in [c.lower() for c in vcs]:
-                return False
-        if self.is_destructive(command):
-            return False
-        return True
+    def _load_or_create_config(self) -> None:
+        """Load YAML configuration or initialize default config file."""
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    if isinstance(data, dict):
+                        loaded_profiles = data.get("profiles", {})
+                        for k, v in loaded_profiles.items():
+                            if k in self.profiles and isinstance(v, dict):
+                                self.profiles[k].update(v)
+                            else:
+                                self.profiles[k] = v
+                        if "default_profile" in data and data["default_profile"] in self.profiles:
+                            self.current_profile = data["default_profile"]
+            except Exception:
+                pass
+        else:
+            try:
+                os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(
+                        {
+                            "default_profile": self.current_profile,
+                            "profiles": self.profiles,
+                        },
+                        f,
+                        default_flow_style=False,
+                    )
+            except Exception:
+                pass
 
-    def enhance(self, raw: str) -> dict:
-        return {
-            "raw": raw,
-            "context": self.build_context_prompt(),
-            "is_artifact": self.is_artifact(raw),
-            "is_valid": self.validate_command(raw),
-            "suggested": self.get_suggestion(raw),
-            "profile": self._profile_name,
+    def update_state(self, state: Dict[str, Any]) -> None:
+        """Updates the internal conversational and application state."""
+        if isinstance(state, dict):
+            self.state.update(state)
+
+    def switch_profile(self, name: str) -> None:
+        """Switches the active profile (e.g. game, terminal, general)."""
+        name_lower = name.lower()
+        if name_lower not in self.profiles:
+            raise ValueError(
+                f"Unknown profile '{name}'. Available: {list(self.profiles.keys())}"
+            )
+        self.current_profile = name_lower
+
+    def add_alias(self, phonetic: str, canonical: str) -> None:
+        """Adds a phonetic-to-canonical alias mapping for the active profile."""
+        profile_data = self.profiles.setdefault(self.current_profile, {})
+        aliases = profile_data.setdefault("aliases", {})
+        aliases[phonetic.strip().lower()] = canonical.strip().lower()
+
+    def memory_context(self) -> List[str]:
+        """Latest Mnemosyne working-memory entries (graceful empty on failure)."""
+        return _fetch_mnemosyne_context()
+
+    def process(self, processor_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enriches VoiceInputProcessor output with profile validation,
+        suggested subsequent commands, and state/artifact metadata.
+        """
+        result = dict(processor_result)
+        profile_data = self.profiles.get(self.current_profile, {})
+        valid_commands = profile_data.get("valid_commands", [])
+        threshold = profile_data.get("confidence_threshold", 0.65)
+
+        action = result.get("action", "UNKNOWN")
+        confidence = float(result.get("confidence", 1.0))
+        is_valid_base = bool(result.get("is_valid", False))
+
+        # Check valid flag per profile policy
+        if valid_commands:
+            # Profile enforces specific command list
+            valid_for_profile = (
+                is_valid_base
+                and (action in valid_commands)
+                and (confidence >= threshold)
+            )
+        else:
+            # Profile has no command filter
+            valid_for_profile = is_valid_base and (confidence >= threshold)
+
+        # Retrieve suggestions
+        suggested_map = profile_data.get("suggested_actions", {})
+        suggested = suggested_map.get(action) or suggested_map.get("DEFAULT", [])
+
+        # Fetch Mnemosyne context
+        mnemosyne_context = _fetch_mnemosyne_context()
+
+        # Build context artifact
+        artifact = {
+            "profile": self.current_profile,
+            "task": self.state.get("task", ""),
+            "state_snapshot": dict(self.state),
+            "mnemosyne_memory": mnemosyne_context,
+            "aliases_count": len(profile_data.get("aliases", {})),
         }
 
-    def to_dict(self) -> dict:
-        return {
-            "profile": self._profile_name,
-            "context": {
-                "current_weapon": self._context.current_weapon,
-                "current_location": self._context.current_location,
-                "current_health": self._context.current_health,
-                "current_task": self._context.current_task,
-                "last_command": self._context.last_command,
-                "current_directory": self._context.current_directory,
-                "current_tool": self._context.current_tool,
-                "valid_commands": self._context.valid_commands,
-                "working_memory": self._context.working_memory,
-            },
-            "config": self.config,
-        }
+        result["profile"] = self.current_profile
+        result["valid"] = valid_for_profile
+        result["suggested"] = list(suggested)
+        result["artifact"] = artifact
 
-    def add_artifact_mapping(self, artifact: str, correction: str) -> None:
-        """Add a new artifact mapping to the current profile."""
-        self._profile.setdefault("artifact_mappings", {})[artifact.lower()] = correction
-        self.config["profiles"][self._profile_name] = self._profile
+        # Record history
+        self.history.append({
+            "action": action,
+            "profile": self.current_profile,
+            "valid": valid_for_profile,
+            "sanitized_text": result.get("sanitized_text", "")
+        })
 
-    def add_valid_command(self, command: str) -> None:
-        """Add a valid command to the current profile."""
-        vcs = self._profile.setdefault("valid_commands", [])
-        if command not in vcs:
-            vcs.append(command)
-        self.config["profiles"][self._profile_name] = self._profile
-
-    def add_destructive_command(self, command: str) -> None:
-        """Add a destructive command to the current profile."""
-        dcs = self._profile.setdefault("destructive_commands", [])
-        if command not in dcs:
-            dcs.append(command)
-        self.config["profiles"][self._profile_name] = self._profile
-
-
-_engine: "ContextEngine | None" = None
-
-
-def get_engine() -> ContextEngine:
-    global _engine
-    if _engine is None:
-        _engine = ContextEngine()
-    return _engine
-
-
-def configure(profile: str = None, **kwargs) -> ContextEngine:
-    engine = get_engine()
-    if profile:
-        engine.switch_profile(profile)
-    if kwargs:
-        engine.config.update(kwargs)
-    return engine
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Voice Context Engine")
-    parser.add_argument("--profile", choices=["game", "terminal", "general"], help="Active profile")
-    parser.add_argument("--show-config", action="store_true", help="Show current config")
-    parser.add_argument("--save-config", action="store_true", help="Save default config to file")
-    args = parser.parse_args()
-
-    engine = ContextEngine()
-    if args.profile:
-        engine.switch_profile(args.profile)
-    if args.save_config:
-        engine.save_config()
-        print(f"Config saved to {CONFIG_PATH}")
-    if args.show_config:
-        print(json.dumps(engine.config, indent=2))
-    else:
-        engine.set_context(
-            current_weapon="shotgun",
-            current_location="zombie_forest",
-            current_health=75,
-            current_task="clearing zombies",
-        )
-        print("Context prompt:")
-        print(engine.build_context_prompt())
-        print()
-        for inp in ["attack zombie", "switch to rifle", "mk deer", "heal", "rm -rf /"]:
-            r = engine.enhance(inp)
-            print(f"Input: {inp!r} -> artifact={r['is_artifact']}, valid={r['is_valid']}, suggested={r['suggested']}")
+        return result

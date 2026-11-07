@@ -1,0 +1,1214 @@
+{
+  "todo.todo_list": {
+    "server": "todo",
+    "name": "todo_list",
+    "description": "List todo items with optional filters",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string",
+          "description": "Filter by project"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "done",
+            "waiting",
+            "blocked"
+          ],
+          "description": "Filter by status"
+        },
+        "lane": {
+          "type": "string",
+          "enum": [
+            "now",
+            "today",
+            "later"
+          ],
+          "description": "Filter by lane"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50,
+          "description": "Max results"
+        }
+      }
+    }
+  },
+  "todo.todo_add": {
+    "server": "todo",
+    "name": "todo_add",
+    "description": "Add a new todo item",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Task title"
+        },
+        "project": {
+          "type": "string",
+          "default": "default",
+          "description": "Project name"
+        },
+        "lane": {
+          "type": "string",
+          "enum": [
+            "now",
+            "today",
+            "later"
+          ],
+          "default": "today"
+        },
+        "priority": {
+          "type": "integer",
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "description": "Priority 1-4"
+        },
+        "estimate": {
+          "type": "integer",
+          "description": "Estimated minutes"
+        },
+        "due": {
+          "type": "string",
+          "description": "ISO8601 due date"
+        }
+      },
+      "required": [
+        "title"
+      ]
+    }
+  },
+  "todo.todo_done": {
+    "server": "todo",
+    "name": "todo_done",
+    "description": "Mark a task as done",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Task ID"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Completion summary"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  "todo.todo_update": {
+    "server": "todo",
+    "name": "todo_update",
+    "description": "Update a todo item",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Task ID"
+        },
+        "title": {
+          "type": "string"
+        },
+        "lane": {
+          "type": "string",
+          "enum": [
+            "now",
+            "today",
+            "later"
+          ]
+        },
+        "priority": {
+          "type": "integer",
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "done",
+            "waiting",
+            "blocked"
+          ]
+        },
+        "project": {
+          "type": "string"
+        },
+        "estimate": {
+          "type": "integer"
+        },
+        "due": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  "todo.todo_delete": {
+    "server": "todo",
+    "name": "todo_delete",
+    "description": "Delete a todo item",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Task ID"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  "todo.todo_focus": {
+    "server": "todo",
+    "name": "todo_focus",
+    "description": "Make a task the single 'now' item",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Task ID"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  "todo.todo_reopen": {
+    "server": "todo",
+    "name": "todo_reopen",
+    "description": "Reopen a completed task",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Task ID"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  },
+  "browser_search.search_and_store": {
+    "server": "browser_search",
+    "name": "search_and_store",
+    "description": "Run web search, store results with 768-dim embeddings in Supabase/PostgreSQL",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query to execute and store"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10,
+          "description": "Max search results to fetch and store"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Search sources (searxng, google, web)"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Optional search metadata"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "browser_search.search_semantic": {
+    "server": "browser_search",
+    "name": "search_semantic",
+    "description": "Semantic search across stored searches using Supabase pgvector",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query text to compute embedding for and match"
+        },
+        "query_embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Optional precomputed 768-dim query vector"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10,
+          "description": "Max results to return"
+        },
+        "threshold": {
+          "type": "number",
+          "default": 0.5,
+          "description": "Cosine similarity threshold (0.0 to 1.0)"
+        }
+      }
+    }
+  },
+  "browser_search.summarize_results": {
+    "server": "browser_search",
+    "name": "summarize_results",
+    "description": "Summarize search results using LangChain summarization chain",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Original search query"
+        },
+        "result_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Result or search IDs to summarize"
+        }
+      },
+      "required": [
+        "query",
+        "result_ids"
+      ]
+    }
+  },
+  "browser_search.expand_query": {
+    "server": "browser_search",
+    "name": "expand_query",
+    "description": "Expand query using LangChain query expansion chain",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Original query to expand"
+        },
+        "num_variations": {
+          "type": "integer",
+          "default": 5,
+          "description": "Number of query variations to generate"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "postgres.sql": {
+    "server": "postgres",
+    "name": "sql",
+    "description": "Execute arbitrary SQL query on the database",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "SQL query to execute"
+        },
+        "params": {
+          "type": "array",
+          "description": "Query parameters",
+          "items": {}
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "postgres.vector_search": {
+    "server": "postgres",
+    "name": "vector_search",
+    "description": "Search for similar vectors using pgvector",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Query vector"
+        },
+        "table": {
+          "type": "string",
+          "default": "documents",
+          "description": "Table to search"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10,
+          "description": "Max results"
+        },
+        "threshold": {
+          "type": "number",
+          "default": 0.0,
+          "description": "Similarity threshold"
+        },
+        "probes": {
+          "type": "integer",
+          "default": 10,
+          "description": "IVFFlat probes (1-50)",
+          "maximum": 50,
+          "minimum": 1
+        },
+        "ef_search": {
+          "type": "integer",
+          "default": 40,
+          "description": "HNSW ef_search (1-200)",
+          "maximum": 200,
+          "minimum": 1
+        }
+      },
+      "required": [
+        "query_embedding"
+      ]
+    }
+  },
+  "postgres.list_tables": {
+    "server": "postgres",
+    "name": "list_tables",
+    "description": "List all tables in the database",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "postgres.health_check": {
+    "server": "postgres",
+    "name": "health_check",
+    "description": "Check database connectivity and pgvector extension",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "supabase.sql": {
+    "server": "supabase",
+    "name": "sql",
+    "description": "Execute arbitrary SQL query on the database (via psycopg fallback)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "params": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "supabase.vector_search": {
+    "server": "supabase",
+    "name": "vector_search",
+    "description": "Search for similar vectors using pgvector",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "table": {
+          "type": "string",
+          "default": "investigations"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10
+        },
+        "threshold": {
+          "type": "number",
+          "default": 0.7
+        }
+      },
+      "required": [
+        "query_embedding"
+      ]
+    }
+  },
+  "supabase.save_investigation": {
+    "server": "supabase",
+    "name": "save_investigation",
+    "description": "Save investigation via Supabase REST API",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "query",
+        "summary",
+        "sources",
+        "embedding"
+      ]
+    }
+  },
+  "supabase.create_user": {
+    "server": "supabase",
+    "name": "create_user",
+    "description": "Create a Supabase auth user via GoTrue API",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string",
+          "default": "user"
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ]
+    }
+  },
+  "supabase.list_tables": {
+    "server": "supabase",
+    "name": "list_tables",
+    "description": "List all tables in the public schema via PostgREST",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "supabase.health_check": {
+    "server": "supabase",
+    "name": "health_check",
+    "description": "Check Supabase API connectivity (Auth + REST + Storage)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "supabase.storage_list_buckets": {
+    "server": "supabase",
+    "name": "storage_list_buckets",
+    "description": "List storage buckets via Supabase Storage API",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "supabase.storage_create_bucket": {
+    "server": "supabase",
+    "name": "storage_create_bucket",
+    "description": "Create a storage bucket",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  "tor.create_hidden_service": {
+    "server": "tor",
+    "name": "create_hidden_service",
+    "description": "Create a new Tor hidden service",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Local port to expose"
+        },
+        "target_port": {
+          "type": "integer",
+          "description": "Port on the .onion address (default 80)"
+        },
+        "target_host": {
+          "type": "string",
+          "description": "Target host (default 127.0.0.1)"
+        }
+      },
+      "required": [
+        "port"
+      ]
+    }
+  },
+  "tor.list_hidden_services": {
+    "server": "tor",
+    "name": "list_hidden_services",
+    "description": "List active hidden services",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "tor.remove_hidden_service": {
+    "server": "tor",
+    "name": "remove_hidden_service",
+    "description": "Remove a hidden service by service ID",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "service_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "service_id"
+      ]
+    }
+  },
+  "gorrent.add_torrent": {
+    "server": "gorrent",
+    "name": "add_torrent",
+    "description": "Add torrent by magnet link or file. Gorrent daemon has no post-download hook; auto-scan into Jellyfin is handled via cron/watcher polling /root/gorrent/.auto-scan-seen using /usr/local/bin/jellyfin-auto-scan.sh.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "magnet": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "magnet"
+      ]
+    }
+  },
+  "gorrent.list_torrents": {
+    "server": "gorrent",
+    "name": "list_torrents",
+    "description": "List all torrents",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "gorrent.remove_torrent": {
+    "server": "gorrent",
+    "name": "remove_torrent",
+    "description": "Remove torrent",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash"
+      ]
+    }
+  },
+  "gorrent.get_stats": {
+    "server": "gorrent",
+    "name": "get_stats",
+    "description": "Get gorrent daemon stats",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "jellyfin.get_libraries": {
+    "server": "jellyfin",
+    "name": "get_libraries",
+    "description": "List Jellyfin libraries",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "jellyfin.search_items": {
+    "server": "jellyfin",
+    "name": "search_items",
+    "description": "Search media items",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search term"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50
+        }
+      }
+    }
+  },
+  "jellyfin.get_status": {
+    "server": "jellyfin",
+    "name": "get_status",
+    "description": "Get Jellyfin server status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "jellyfin.trigger_scan": {
+    "server": "jellyfin",
+    "name": "trigger_scan",
+    "description": "Trigger library scan",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "searxng.search": {
+    "server": "searxng",
+    "name": "search",
+    "description": "Search the web via searxng. Returns title, url, snippet for each result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Max results to return (default 10)",
+          "default": 10
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "godot.project_manage": {
+    "server": "godot",
+    "name": "project_manage",
+    "description": "Manage Godot project (load, run, test, stop)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "load",
+            "run",
+            "test",
+            "stop"
+          ]
+        },
+        "project_path": {
+          "type": "string",
+          "description": "Optional custom project directory"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "godot.scene_manage": {
+    "server": "godot",
+    "name": "scene_manage",
+    "description": "Manage scenes (open, save, create, list)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "open",
+            "save",
+            "create",
+            "list"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Scene path, e.g. res://scenes/..."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "godot.node_manage": {
+    "server": "godot",
+    "name": "node_manage",
+    "description": "Manage scene nodes (create, find, set_property, get_properties)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "find",
+            "set_property",
+            "get_properties"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Scene path"
+        },
+        "node_type": {
+          "type": "string",
+          "description": "Godot node type"
+        },
+        "properties": {
+          "type": "object",
+          "description": "Node properties dict"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  "godot.script_manage": {
+    "server": "godot",
+    "name": "script_manage",
+    "description": "Manage scripts (create, attach, patch, read)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "create",
+            "attach",
+            "patch",
+            "read"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Script path, e.g. res://scripts/..."
+        },
+        "content": {
+          "type": "string",
+          "description": "GDScript source code"
+        }
+      },
+      "required": [
+        "action",
+        "path"
+      ]
+    }
+  },
+  "godot.store_scene": {
+    "server": "godot",
+    "name": "store_scene",
+    "description": "Store scene structure and GDScript metadata with 768-dim embedding into Supabase pgvector via Supabase sql tool",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scene_path": {
+          "type": "string",
+          "description": "Path to scene, e.g. res://scenes/characters/zombie_bear.tscn"
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional text description of the scene"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of search tags"
+        },
+        "node_tree": {
+          "type": "object",
+          "description": "Optional scene node hierarchy"
+        },
+        "embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Optional precomputed 768-dim vector"
+        }
+      },
+      "required": [
+        "scene_path"
+      ]
+    }
+  },
+  "godot.search_scenes": {
+    "server": "godot",
+    "name": "search_scenes",
+    "description": "Search scenes semantically using query vector via Supabase vector_search tool",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "768-dim query vector"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10,
+          "description": "Max results to return"
+        },
+        "threshold": {
+          "type": "number",
+          "default": 0.0,
+          "description": "Similarity threshold"
+        },
+        "query": {
+          "type": "string",
+          "description": "Optional natural language query (used if query_embedding omitted)"
+        },
+        "probes": {
+          "type": "integer",
+          "default": 10,
+          "maximum": 50,
+          "description": "Number of IVFFlat probes (default 10, max 50)"
+        }
+      }
+    }
+  },
+  "godot.store_script": {
+    "server": "godot",
+    "name": "store_script",
+    "description": "Store GDScript code and metadata with 768-dim embedding into Supabase godot_scripts table via Supabase sql tool",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scene_id": {
+          "type": "string",
+          "description": "Optional UUID of associated scene in godot_scenes"
+        },
+        "class_name": {
+          "type": "string",
+          "description": "Class name of the script"
+        },
+        "function_name": {
+          "type": "string",
+          "description": "Function name"
+        },
+        "code": {
+          "type": "string",
+          "description": "GDScript source code"
+        },
+        "embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Optional 768-dim vector"
+        },
+        "script_path": {
+          "type": "string",
+          "description": "Optional script path, e.g. res://scripts/Player.gd"
+        }
+      }
+    }
+  },
+  "godot.sql": {
+    "server": "godot",
+    "name": "sql",
+    "description": "Execute arbitrary SQL query on the database (via psycopg fallback)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "params": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "godot.vector_search": {
+    "server": "godot",
+    "name": "vector_search",
+    "description": "Search for similar vectors using pgvector",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query_embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "table": {
+          "type": "string",
+          "default": "investigations"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 10
+        },
+        "threshold": {
+          "type": "number",
+          "default": 0.7
+        }
+      },
+      "required": [
+        "query_embedding"
+      ]
+    }
+  },
+  "godot.save_investigation": {
+    "server": "godot",
+    "name": "save_investigation",
+    "description": "Save investigation via Supabase REST API",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "query",
+        "summary",
+        "sources",
+        "embedding"
+      ]
+    }
+  },
+  "godot.create_user": {
+    "server": "godot",
+    "name": "create_user",
+    "description": "Create a Supabase auth user via GoTrue API",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string",
+          "default": "user"
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ]
+    }
+  },
+  "godot.list_tables": {
+    "server": "godot",
+    "name": "list_tables",
+    "description": "List all tables in the public schema via PostgREST",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "godot.health_check": {
+    "server": "godot",
+    "name": "health_check",
+    "description": "Check Supabase API connectivity (Auth + REST + Storage)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "godot.storage_list_buckets": {
+    "server": "godot",
+    "name": "storage_list_buckets",
+    "description": "List storage buckets via Supabase Storage API",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "godot.storage_create_bucket": {
+    "server": "godot",
+    "name": "storage_create_bucket",
+    "description": "Create a storage bucket",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  "intelligent-job-search.search_jobs": {
+    "server": "intelligent-job-search",
+    "name": "search_jobs",
+    "description": "Search job boards for matching positions",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search keyword query"
+        },
+        "location": {
+          "type": "string",
+          "default": "remote"
+        },
+        "remote_only": {
+          "type": "boolean",
+          "default": true
+        },
+        "limit": {
+          "type": "integer",
+          "default": 20
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "intelligent-job-search.get_job_details": {
+    "server": "intelligent-job-search",
+    "name": "get_job_details",
+    "description": "Fetch details and description for a specific job",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "source_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "source_url"
+      ]
+    }
+  },
+  "intelligent-job-search.score_job_fit": {
+    "server": "intelligent-job-search",
+    "name": "score_job_fit",
+    "description": "Score candidate fit against job description",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "job_description_md": {
+          "type": "string"
+        },
+        "candidate_profile_path": {
+          "type": "string",
+          "default": "profile.json"
+        }
+      },
+      "required": [
+        "job_description_md"
+      ]
+    }
+  },
+  "intelligent-job-search.list_tracked_jobs": {
+    "server": "intelligent-job-search",
+    "name": "list_tracked_jobs",
+    "description": "List tracked jobs by application status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "status_filter": {
+          "type": "string",
+          "default": "all"
+        }
+      }
+    }
+  }
+}

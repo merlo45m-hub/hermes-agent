@@ -194,12 +194,32 @@ def _read_runtime_snapshot(config: dict[str, Any]):
     return gateway_snapshot
 
 
+def _memory_attributes() -> dict[str, int]:
+    """Cheap /proc sample for the health span. Never raises (Linux-only, {} elsewhere)."""
+    try:
+        from gateway.lifecycle_ledger import sample_memory
+        mem = sample_memory()
+    except Exception:
+        return {}
+    keep = ("rss_kib", "mem_total_kib", "mem_available_kib", "swap_used_kib")
+    return {k: v for k, v in mem.items() if k in keep and isinstance(v, int)}
+
+
 def _emit_snapshot_events(config: dict[str, Any]) -> None:
     if not _gateway_health_config(config).get("diagnostic_events_enabled", True):
         return
     try:
+        mem = _memory_attributes()
         for event in _read_runtime_snapshot(config).events:
-            emitter.emit(event)
+            # Convert to the wire dict so the memory sample can ride along. The
+            # typed event dataclasses stay content-free by construction; the
+            # span allowlist decides what actually egresses.
+            if isinstance(event, dict):
+                payload: dict[str, Any] = dict(event)
+            else:
+                payload = dict(event.to_dict())
+            payload.update(mem)
+            emitter.emit(payload)
     except Exception:
         logger.debug("gateway health snapshot emit failed", exc_info=True)
 
@@ -267,7 +287,13 @@ class GatewayDiagnosticLogStreamer(EmitterStreamer):
 
 
 def _gateway_health_event(ev: dict[str, Any]) -> bool:
-    return ev.get("event") in {"gateway_health", "cron_execution"}
+    # The gateway's single monitoring streamer carries every operator-owned
+    # plane: health snapshots, cron, warning/error diagnostics, and per-LLM-call
+    # telemetry. Phoenix accepts OTLP /v1/traces only — /v1/logs returns HTTP
+    # 405 — so all of these travel as spans, never as OTLP log records.
+    return ev.get("event") in {
+        "gateway_health", "cron_execution", "gateway_diagnostic", "llm_turn",
+    }
 
 
 def _fail(runtime: GatewayHealthExportRuntime, log: Callable[..., None], msg: str, reason: str) -> GatewayHealthExportRuntime:
@@ -283,6 +309,7 @@ def start_gateway_health_export(config: dict[str, Any]) -> GatewayHealthExportRu
     gh = _gateway_health_config(config)
     metrics_on = gh.get("metrics_enabled", True)
     diagnostics_on = gh.get("diagnostic_events_enabled", True)
+    log_events_on = gh.get("log_events_enabled", False)
     runtime = GatewayHealthExportRuntime(enabled=True, reason="enabled")
     sdk: Optional[dict[str, Any]] = None
     if metrics_on or diagnostics_on:
@@ -301,9 +328,21 @@ def start_gateway_health_export(config: dict[str, Any]) -> GatewayHealthExportRu
             runtime.streamer = otlp_exporter.start_streaming(config, event_filter=_gateway_health_event)
             if runtime.streamer is None:
                 raise RuntimeError("gateway health span streamer did not start")
-            log_streamer = GatewayDiagnosticLogStreamer(config, sdk)
-            emitter.get_emitter().subscribe(log_streamer)
-            runtime.log_streamer = log_streamer
+            # The OTLP subscriber is now attached: emit the diagnostic staged by
+            # the previous life's unclean death (a SIGKILL cannot emit a span at
+            # the moment it dies).
+            try:
+                from gateway.lifecycle_ledger import flush_unclean_exit_span
+                flush_unclean_exit_span()
+            except Exception:
+                logger.debug("pending unclean-exit diagnostic flush failed", exc_info=True)
+            # Phoenix accepts only OTLP /v1/traces; /v1/logs returns HTTP 405.
+            # Keep the log streamer opt-in so diagnostics are exported as spans
+            # (by the streamer above) instead of being lost to a rejected path.
+            if log_events_on:
+                log_streamer = GatewayDiagnosticLogStreamer(config, sdk)
+                emitter.get_emitter().subscribe(log_streamer)
+                runtime.log_streamer = log_streamer
         except Exception:
             return _fail(runtime, logger.debug, "gateway diagnostic OTLP export failed to start", "diagnostics_start_failed")
     try:
