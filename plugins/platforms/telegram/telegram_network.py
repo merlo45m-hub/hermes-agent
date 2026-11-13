@@ -7,6 +7,7 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import time
 from typing import Iterable, Optional
 
 import httpx
@@ -75,6 +76,13 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     # See #63311.
     _POOL_LIMITS = httpx.Limits(max_connections=8, max_keepalive_connections=4)
 
+    # Circuit breaking (#154967): a path that keeps failing is skipped for an
+    # exponentially growing cooldown instead of being retried on every request, which
+    # previously produced a warning per attempt and pinned the loop on a dead route.
+    _FAILURE_THRESHOLD = 3
+    _BACKOFF_BASE_S = 5.0
+    _BACKOFF_MAX_S = 300.0
+
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
@@ -93,6 +101,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
         self._last_failure: tuple[str, str] | None = None
+        # Per-path circuit breaking (#154967).
+        self._path_failures: dict[str, int] = {}
+        self._path_cooldown: dict[str, float] = {}
 
     async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
         async with self._fallback_lock:
@@ -131,20 +142,49 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
     def _attempt_order(self) -> list[Optional[str]]:
         """Sticky path first, then IPv4 literals, dual-stack hostname last (a blackholed IPv6 path never
-        errors — Happy Eyeballs waits on AAAA until the OS TCP timeout and can pin the loop)."""
+        errors — Happy Eyeballs waits on AAAA until the OS TCP timeout and can pin the loop).
+
+        Paths inside their cooldown window are skipped (#154967), so a route that keeps
+        failing stops being retried on every single request.
+        """
         order: list[Optional[str]] = []
         if self._sticky_ip is not _UNSET:
             order.append(None if self._sticky_ip is None else str(self._sticky_ip))
         order.extend(ip for ip in self._fallback_ips if ip not in order)
         if None not in order:
             order.append(None)
-        return order
+        now = time.monotonic()
+        return [p for p in order if self._path_cooldown.get(p or _TELEGRAM_API_HOST, 0.0) <= now]
+
+    def _record_failure(self, path: Optional[str], exc: Exception) -> None:
+        """Count consecutive failures per path and cool it down past the threshold (#154967)."""
+        key = path or _TELEGRAM_API_HOST
+        count = self._path_failures.get(key, 0) + 1
+        self._path_failures[key] = count
+        if count < self._FAILURE_THRESHOLD:
+            return
+        delay = min(self._BACKOFF_BASE_S * (2 ** (count - self._FAILURE_THRESHOLD)), self._BACKOFF_MAX_S)
+        self._path_cooldown[key] = time.monotonic() + delay
+        logger.warning(
+            "[Telegram] %s failed %d times in a row; cooling it down for %.0fs before retrying",
+            key, count, delay,
+        )
+
+    def _record_success(self, path: Optional[str]) -> None:
+        """Clear the circuit for a path that answered (#154967)."""
+        key = path or _TELEGRAM_API_HOST
+        self._path_failures.pop(key, None)
+        self._path_cooldown.pop(key, None)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
             return await self._primary.handle_async_request(request)
         last_error: Exception | None = None
-        for ip in self._attempt_order():
+        order = self._attempt_order()
+        if not order:
+            logger.warning("[Telegram] every API path is cooling down after repeated failures; raising the last error")
+            raise httpx.ConnectError(self._last_failure[1] if self._last_failure else "all Telegram API paths are cooling down")
+        for ip in order:
             candidate = request if ip is None else _rewrite_request_for_ip(request, ip)
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
@@ -165,6 +205,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                             if ip is not None:
                                 log = logger.warning if last_error is not None else logger.info
                                 log("[Telegram] Using sticky IPv4 Telegram API path %s (dual-stack hostname tried last — #87015)", ip)
+                self._record_success(ip)
                 return response
             except Exception as exc:
                 last_error = exc
@@ -173,6 +214,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 path = ip or _TELEGRAM_API_HOST
                 failure = _describe_transport_error(exc)
                 self._last_failure = (path, failure)
+                self._record_failure(ip, exc)
                 if self._sticky_ip is not _UNSET and ip == self._sticky_ip:
                     async with self._sticky_lock:
                         if self._sticky_ip is not _UNSET and self._sticky_ip == ip:

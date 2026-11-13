@@ -65,7 +65,13 @@ def _ceiling(agent: Any) -> int:
 
 
 def _inject_wrapup(messages: list[dict[str, Any]]) -> bool:
-    """Append to the newest non-persisted tool result (cache-safe, mirrors run budget)."""
+    """Append to the newest non-persisted tool result (cache-safe, mirrors run budget).
+
+    Falls back to a standalone message when there is no mutable tool-result tail (a
+    fresh turn, or the newest result is already db-persisted): without it the grace
+    call still happens but carries no wrap-up instruction, so the turn ends silently
+    instead of summarising (#154967).
+    """
     try:
         from agent.context_compressor import _DB_PERSISTED_MARKER
     except Exception:
@@ -73,7 +79,7 @@ def _inject_wrapup(messages: list[dict[str, Any]]) -> bool:
     for msg in reversed(messages or []):
         if isinstance(msg, dict) and msg.get("role") == "tool":
             if msg.get(_DB_PERSISTED_MARKER):
-                return False
+                break
             existing = msg.get("content", "")
             if isinstance(existing, str):
                 msg["content"] = existing + f"\n\n{CONTEXT_CEILING_WRAPUP_NOTICE}"
@@ -81,9 +87,13 @@ def _inject_wrapup(messages: list[dict[str, Any]]) -> bool:
                 try:
                     msg["content"] = [*(existing or []), {"type": "text", "text": CONTEXT_CEILING_WRAPUP_NOTICE}]
                 except Exception:
-                    return False
+                    break
             return True
-    return False
+    try:
+        messages.append({"role": "user", "content": CONTEXT_CEILING_WRAPUP_NOTICE})
+        return True
+    except Exception:  # pragma: no cover - messages is normally a plain list
+        return False
 
 
 def _memory_numbers() -> dict[str, int]:
