@@ -140,7 +140,7 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: list[dict[str, Any]]) 
             # Only the current tool-result tail is mutable; an older turn may already be
             # cached (same contract as _maybe_inject_iteration_budget_warning).
             if msg.get(_DB_PERSISTED_MARKER):
-                return False
+                break
             existing = msg.get("content", "")
             if isinstance(existing, str):
                 msg["content"] = existing + f"\n\n{RUN_BUDGET_WRAPUP_NOTICE}"
@@ -148,14 +148,26 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: list[dict[str, Any]]) 
                 try:
                     msg["content"] = [*(existing or []), {"type": "text", "text": RUN_BUDGET_WRAPUP_NOTICE}]
                 except Exception:
-                    return False
+                    break
             agent._run_budget_wrapup_injected = True
             logger.info(
                 "Run budget wrap-up notice injected (budget=%.0fs, elapsed=%.0fs)",
                 float(budget), time.time() - started,
             )
             return True
-    return False
+    # No mutable tool-result tail (fresh turn, or the newest result is db-persisted):
+    # fall back to a standalone message so the wrap-up still lands instead of the turn
+    # ending with no summary (#154967).
+    try:
+        messages.append({"role": "user", "content": RUN_BUDGET_WRAPUP_NOTICE})
+        agent._run_budget_wrapup_injected = True
+        logger.info(
+            "Run budget wrap-up notice appended standalone (budget=%.0fs, elapsed=%.0fs)",
+            float(budget), time.time() - started,
+        )
+        return True
+    except Exception:  # pragma: no cover
+        return False
 
 
 def _restore_user_after_reference_handoff(
