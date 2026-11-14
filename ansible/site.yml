@@ -1,0 +1,25 @@
+---
+# LightLLM hot-standby failover deployment.
+
+# Primary play: deploys and activates the primary gateway (port 40000).
+- name: LightLLM primary
+  hosts: lightllm_primary
+  serial: 1
+  gather_facts: false
+  tasks:
+    - name: Deploy the primary role
+      ansible.builtin.import_role:
+        name: lightllm_primary
+
+# Standby play: deploys and activates the standby gateway (port 40001).
+- name: LightLLM standby
+  hosts: lightllm_standby
+  serial: 1
+  gather_facts: false
+  tasks:
+    - name: Deploy the standby role
+      ansible.builtin.import_role:
+        name: lightllm_standby
+
+# Failover bookkeeping is an operational step (promote the standby, demote the
+# primary), not part of the role tree; see README.md.

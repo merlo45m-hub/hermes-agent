@@ -120,13 +120,25 @@ def _structured(text_fallback: bool = False):
 
 
 def coerce_tool_args(raw: Any) -> Args:
-    """Tool-call arguments as a dict: JSON strings are decoded (undecodable -> ``{"raw": ...}``),
-    anything else non-dict becomes ``{}``."""
+    """Tool-call arguments as a dict: JSON strings are decoded.
+
+    A malformed payload is logged at WARNING and replaced with an empty dict so the
+    tool surface never receives a broken string that would fail schema validation
+    downstream.  The raw text is retained only for the log (truncated), never as a
+    fabricated payload.
+    """
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
-        except Exception:
-            raw = {"raw": raw}
+        except (ValueError, TypeError) as exc:
+            # Truncate long payloads for the log.
+            snippet = raw if len(raw) <= 500 else raw[:500] + "...[truncated]"
+            logger.warning(
+                "coerce_tool_args: malformed JSON payload for tool args: %s (first 500 chars: %r)",
+                exc,
+                snippet,
+            )
+            return {}
     return raw if isinstance(raw, dict) else {}
 
 

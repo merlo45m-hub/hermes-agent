@@ -199,18 +199,24 @@ def _schema_allows_null(schema: dict | None) -> bool:
 
 
 def _coerce_json(value: str, expected_python_type: type):
-    """json.loads *value* when the schema expects array/object; original string on mismatch."""
+    """json.loads *value* when the schema expects array/object.
+
+    A malformed payload is logged at WARNING for evidence and replaced with an empty
+    dict so the caller never receives a broken string that cannot be validated.
+    """
     name = expected_python_type.__name__
     try:
         parsed = json.loads(value)
     except (ValueError, TypeError) as exc:
-        logger.warning("coerce_tool_args: failed to parse string as JSON for expected type %s: %s", name, exc)
-        return value
+        # Truncate long payloads for the log.
+        snippet = value if len(value) <= 500 else value[:500] + "...[truncated]"
+        logger.warning(
+            "coerce_tool_args: malformed JSON payload for expected type %s: %s (first 500 chars: %r)",
+            name, exc, snippet,
+        )
+        return {}
     if isinstance(parsed, expected_python_type):
-        logger.debug("coerce_tool_args: coerced string to %s via json.loads", name)
         return parsed
-    logger.warning("coerce_tool_args: JSON-parsed value is %s, expected %s — skipping coercion",
-                   type(parsed).__name__, name)
     return value
 
 

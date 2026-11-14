@@ -328,3 +328,15 @@ apps/desktop/.dist-build*
 
 # Hermes MCP self-heal guard (local-only, must not be committed)
 sitecustomize.py
+
+# Local shell accidents and editor/agent backups — never part of the codebase.
+# The `=*` entries are glob-expanded pip arguments (e.g. `pip install foo >=1.0`
+# unquoted) that landed in the checkout root; `*.bak*` covers the agent's
+# before-edit copies, including agent/relay_runtime.py.bak (relay_runtime must
+# stay at HEAD — see the Termux relay note).
+=*
+*.bak
+*.bak-*
+*.orig
+*.rej
+*~

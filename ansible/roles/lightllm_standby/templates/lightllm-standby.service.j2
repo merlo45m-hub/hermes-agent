@@ -1,0 +1,22 @@
+{#-
+  LightLLM standby systemd unit.
+  Template: ansible/roles/lightllm_standby/templates/lightllm-standby.service.j2
+-#}
+[Unit]
+Description=LightLLM standby inference gateway
+After=network.target
+
+[Service]
+ExecStart={{ lightllm_virtualenv }}/bin/lightllm serve
+  --host {{ lightllm_standby_host }}
+  --port {{ lightllm_standby_port }}
+  --model {{ lightllm_standby_model }}
+  --tensor-parallel {{ lightllm_standby_tensor_parallel }}
+Environment=LIGHTLLM_ROLE=standby
+Environment=LIGHTLLM_PEER={{ lightllm_standby_peer_primary_host }}:{{ lightllm_standby_peer_primary_port }}
+Environment=LIGHTLLM_VERSION={{ ansible_facts.python.version }}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

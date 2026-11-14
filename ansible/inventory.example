@@ -1,0 +1,17 @@
+# Example inventory for the LightLLM hot-standby failover deployment.
+#
+# Group: lightllm_primary   -> the active gateway host
+# Group: lightllm_standby   -> the hot standby, promoted on primary failure
+#
+# usage: ansible-playbook -i inventory.example site.yml
+
+[lightllm_primary]
+primary-01 ansible_host=10.0.1.11 ansible_user=ubuntu
+primary-02 ansible_host=10.0.1.12 ansible_user=ubuntu
+
+[lightllm_standby]
+standby-01 ansible_host=10.0.1.21 ansible_user=ubuntu
+
+[lightllm_all:children]
+lightllm_primary
+lightllm_standby

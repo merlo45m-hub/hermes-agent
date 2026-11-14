@@ -1,0 +1,25 @@
+---
+# Default variables for the lightllm_primary role.
+
+# Bind address for the primary LightLLM gateway.
+lightllm_primary_host: "0.0.0.0"
+
+# Port the primary LightLLM gateway serves on.
+lightllm_primary_port: 40000
+
+# Model the primary serves.
+lightllm_primary_model: "meta-llama/Llama-2-7b-hf"
+
+# Tensor parallel size for the primary.
+lightllm_primary_tensor_parallel: 1
+
+# Health-check path.
+lightllm_primary_health_path: "/health"
+
+# Extra pip install flags for LightLLM.
+lightllm_primary_pip_extra_args: ""
+
+# Systemd environment markers for observability.
+lightllm_primary_env: |
+  LIGHTLLM_ROLE=primary
+  LIGHTLLM_VERSION={{ ansible_facts.python.version }}

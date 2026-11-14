@@ -382,6 +382,8 @@ from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
+from hermes_cli.subcommands.issue import build_issue_parser
+from hermes_cli.subcommands.metrics import build_metrics_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
@@ -3410,6 +3412,8 @@ def _build_cli_parser():
     build_journey_parser(subparsers)
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
+    build_issue_parser(subparsers)
+    build_metrics_parser(subparsers)
     build_computer_use_parser(subparsers)
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
     build_connectors_parser(subparsers)

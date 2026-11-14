@@ -1,0 +1,21 @@
+{#-
+  LightLLM primary systemd unit.
+  Template: ansible/roles/lightllm_primary/templates/lightllm-primary.service.j2
+-#}
+[Unit]
+Description=LightLLM primary inference gateway
+After=network.target
+
+[Service]
+ExecStart={{ lightllm_virtualenv }}/bin/lightllm serve
+  --host {{ lightllm_primary_host }}
+  --port {{ lightllm_primary_port }}
+  --model {{ lightllm_primary_model }}
+  --tensor-parallel {{ lightllm_primary_tensor_parallel }}
+Environment=LIGHTLLM_ROLE=primary
+Environment=LIGHTLLM_VERSION={{ ansible_facts.python.version }}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

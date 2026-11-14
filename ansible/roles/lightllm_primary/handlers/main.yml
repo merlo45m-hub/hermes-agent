@@ -1,0 +1,8 @@
+---
+# Handlers for the lightllm_primary role.
+
+- name: restart lightllm primary
+  ansible.builtin.systemd:
+    name: "lightllm-primary"
+    state: restarted
+    daemon_reload: true

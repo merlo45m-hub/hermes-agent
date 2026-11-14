@@ -211,6 +211,7 @@ _KEEP_BY_KIND: dict[str, tuple[str, ...]] = {
     "llm_turn": (
         "model", "provider", "api_call", "input_tokens", "output_tokens", "total_tokens",
         "cache_read_tokens", "cache_write_tokens", "latency_ms", "status",
+        "cache_hit_rate", "ttft_ms",
     ),
 }
 

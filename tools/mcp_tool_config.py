@@ -648,7 +648,39 @@ def _load_mcp_config() -> dict[str, dict]:
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
         _portable_mcp_servers(safe_servers)
+        safe_servers = _resolve_environment_connectors(safe_servers)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
+
+
+def _resolve_environment_connectors(servers: dict[str, dict]) -> dict[str, dict]:
+    """Resolve the filesystem/postgres connectors from the active connector environment.
+
+    ``environments.<connector_env>`` carries the per-environment parameters (filesystem
+    root sets, postgres connection params); the connectors read those parameters so the
+    same code path serves any environment (local dev vs deployed VPS) without code changes.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except Exception:
+        return servers
+    environments = config.get("environments") or {}
+    active = str(config.get("connector_env") or "dev")
+    env_conf = environments.get(active) if isinstance(environments, dict) else {}
+    resolved: dict[str, dict] = {}
+    for name, cfg in (servers or {}).items():
+        if not isinstance(cfg, dict):
+            resolved[name] = cfg
+            continue
+        new_cfg = dict(cfg)
+        if name == "filesystem" and isinstance(env_conf.get("filesystem"), dict):
+            env_roots = env_conf["filesystem"].get("roots")
+            if isinstance(env_roots, list) and env_roots:
+                args = new_cfg.get("args")
+                if isinstance(args, list) and args:
+                    new_cfg["args"] = [str(args[0])] + [str(r) for r in env_roots]
+        resolved[name] = new_cfg
+    return resolved

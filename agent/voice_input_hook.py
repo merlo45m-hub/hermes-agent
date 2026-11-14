@@ -47,7 +47,8 @@ _DEFAULTS: Dict[str, Any] = {
     "articulate_mode": "auto",   # auto | always | off
     "include_context": True,
     "memory_mode": "first_turn",  # first_turn | always | off
-    "profile": "general",         # profile label for typed-chat context
+    "typed_profile": "general",   # pre_llm_call -> typed chat text
+    "voice_profile": "game",      # pre_tool_call -> voice / game tool commands
     "voice_tool_names": ["voice", "voice_input", "voice_command"],
 }
 
@@ -143,7 +144,7 @@ def pre_llm_call_hook(
         return None
 
     cfg = _CONFIG
-    profile = cfg.get("profile") or _engine.current_profile
+    profile = cfg.get("typed_profile") or _engine.current_profile
     # One engine for text AND voice: articulate every real user message. Skip
     # gateway/curator/skill-injection traffic, which is structured, not dictation.
     effective_mode = "off" if _is_internal_traffic(text) else cfg.get("articulate_mode", "auto")
@@ -169,6 +170,16 @@ def pre_llm_call_hook(
             "request. Ignore transcription artifacts, phonetic typos and run-on "
             "joins in the raw text above; do not quote or correct the raw text.\n"
             + articulated
+        )
+    elif result.get("needs_articulation") and not articulated:
+        # The rewriter was unavailable. Say so explicitly: pre_llm_call is
+        # append-only and fails open, so without this the model gets raw
+        # dictation with no warning and no way to know it was never cleaned.
+        parts.append(
+            "⚠ The message above arrived as raw dictation and could not be cleaned "
+            "up (the rewriting provider was unavailable). It may still contain "
+            "transcription artifacts, phonetic typos or run-on joins — interpret it "
+            "accordingingly and ask for confirmation if it is ambiguous."
         )
     if context:
         parts.append("🧠 Context: " + context)
@@ -244,6 +255,12 @@ def pre_tool_call_hook(
                 proc_result["flags"] = list(proc_result.get("flags", [])) + ["LLM_REWRITTEN"]
                 proc_result["llm_rewrite"] = rewrite_result
 
+    # Voice/game tools always run under the voice profile, explicitly, so the
+    # outcome never depends on the engine default or on what ran before.
+    try:
+        _engine.switch_profile(str(_CONFIG.get("voice_profile") or "game"))
+    except Exception:
+        pass
     enriched_result = _engine.process(proc_result)
 
     if _is_destructive(enriched_result, raw_transcript):

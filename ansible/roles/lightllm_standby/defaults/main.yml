@@ -1,0 +1,29 @@
+---
+# Default variables for the lightllm_standby role.
+
+# Bind address for the standby LightLLM gateway.
+lightllm_standby_host: "0.0.0.0"
+
+# Port the standby LightLLM gateway serves on.
+lightllm_standby_port: 40001
+
+# Model the standby serves when promoted.
+lightllm_standby_model: "meta-llama/Llama-2-7b-hf"
+
+# Tensor parallel size for the standby.
+lightllm_standby_tensor_parallel: 1
+
+# Health-check path.
+lightllm_standby_health_path: "/health"
+
+# Extra pip install flags for LightLLM.
+lightllm_standby_pip_extra_args: ""
+
+# Peer primary endpoint that this standby mirrors (for config drift checks).
+lightllm_standby_peer_primary_host: "127.0.0.1"
+lightllm_standby_peer_primary_port: 40000
+
+# Systemd environment markers for observability.
+lightllm_standby_env: |
+  LIGHTLLM_ROLE=standby
+  LIGHTLLM_VERSION={{ ansible_facts.python.version }}

@@ -2,9 +2,15 @@ engine:
   articulate_mode: always
   include_context: true
   memory_mode: first_turn
-  profile: general
+  # Which profile each ENTRY POINT uses. There is no single "active" profile:
+  # the two hooks set their own, explicitly, so the behaviour never depends on
+  # which order things ran in.
+  typed_profile: general      # pre_llm_call  -> typed chat text
+  voice_profile: game         # pre_tool_call -> voice / game tool commands
   cache_max_entries: 1000
-default_profile: game
+# Engine default. Equals typed_profile; the voice hook switches to voice_profile
+# explicitly before it processes, so this default only covers typed text.
+default_profile: general
 profiles:
   game:
     aliases:

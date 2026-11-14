@@ -1,0 +1,7 @@
+---
+# Role-level variables for lightllm_standby (overrides defaults if needed).
+
+lightllm_service_name: "lightllm-standby"
+lightllm_config_dir: "/etc/lightllm"
+lightllm_model_dir: "/var/lib/lightllm/standby"
+lightllm_virtualenv: "/opt/lightllm-venv"

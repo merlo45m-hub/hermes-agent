@@ -1209,7 +1209,36 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
 
     _validate_web_backends(config, issues)
     _validate_quoted_containers(config, issues)
+    _validate_environments(config, issues)
     return issues
+
+
+def _validate_environments(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
+    """Validate the environments/connector_env structure used for modular connector switching."""
+    environments = config.get("environments")
+    if environments is not None and not isinstance(environments, dict):
+        _issue(issues, "error", "environments must be a mapping of environment name -> params", None)
+        return
+    if not isinstance(environments, dict) or not environments:
+        return
+    active = config.get("connector_env")
+    if not isinstance(active, str) or not active:
+        _issue(issues, "error", "connector_env must be a non-empty string naming an environments key", None)
+        return
+    if active not in environments:
+        _issue(
+            issues,
+            "error",
+            f"connector_env '{active}' is not defined under environments; available: {sorted(environments)}",
+            None,
+        )
+    for env_name, env_conf in environments.items():
+        if not isinstance(env_conf, dict):
+            _issue(issues, "warning", f"environments.{env_name} must be a mapping", None)
+            continue
+        for conn in ("filesystem", "postgres"):
+            if conn in env_conf and not isinstance(env_conf[conn], dict):
+                _issue(issues, "warning", f"environments.{env_name}.{conn} must be a mapping", None)
 
 
 def print_config_warnings(config: Optional[dict[str, Any]] = None) -> None:

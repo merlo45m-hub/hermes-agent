@@ -48,6 +48,45 @@ DEFAULT_CONFIG = {
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
+    # Environments: machine- or account-level profiles for connectors (filesystem,
+    # postgres, and others). Each environment carries its own connector parameters; the
+    # active profile is selected by ``connector_env``. This parameterization lets the same
+    # codebase serve a local dev machine and a deployed VPS without code changes.
+    "environments": {
+        # Local development host. Roots match the current single-host setup, so selecting
+        # this profile changes nothing about the running filesystem connector.
+        "dev": {
+            "filesystem": {
+                "roots": ["/root", "/root/3d-workspace", "/root/gorrent/downloads"],
+            },
+            "postgres": {
+                "host": "127.0.0.1",
+                "port": 5432,
+                "database": "hermes_dev",
+                "user": "hermes",
+                "password_env": "HERMOD_POSTGRES_PASSWORD",
+            },
+        },
+        # Deployed VPS reached over the mesh. Same workspace roots plus the media mount,
+        # and the production database rather than the local development one.
+        "prod": {
+            "filesystem": {
+                "roots": ["/root", "/root/3d-workspace", "/root/gorrent/downloads", "/root/media"],
+            },
+            "postgres": {
+                "host": "10.9.0.1",
+                "port": 5432,
+                "database": "hermes",
+                "user": "hermes",
+                "password_env": "HERMOD_POSTGRES_PASSWORD",
+            },
+        },
+    },
+    # Active connector environment. The filesystem connector resolves its roots from
+    # environments.<connector_env>.filesystem.roots. The postgres block is carried for the
+    # connector loader but is not consumed yet, so HERMOD_POSTGRES_PASSWORD is only required
+    # once that wiring lands - it is not read at startup today.
+    "connector_env": "dev",
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.

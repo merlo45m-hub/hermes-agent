@@ -1,0 +1,9 @@
+{#-
+  LightLLM primary server config.
+  Template: ansible/roles/lightllm_primary/templates/lightllm-primary.yaml.j2
+-#}
+model: {{ lightllm_primary_model }}
+host: {{ lightllm_primary_host }}
+port: {{ lightllm_primary_port }}
+tensor_parallel: {{ lightllm_primary_tensor_parallel }}
+health_path: {{ lightllm_primary_health_path }}

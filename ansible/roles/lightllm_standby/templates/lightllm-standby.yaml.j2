@@ -1,0 +1,11 @@
+{#-
+  LightLLM standby server config.
+  Template: ansible/roles/lightllm_standby/templates/lightllm-standby.yaml.j2
+-#}
+model: {{ lightllm_standby_model }}
+host: {{ lightllm_standby_host }}
+port: {{ lightllm_standby_port }}
+tensor_parallel: {{ lightllm_standby_tensor_parallel }}
+health_path: {{ lightllm_standby_health_path }}
+peer_primary_host: {{ lightllm_standby_peer_primary_host }}
+peer_primary_port: {{ lightllm_standby_peer_primary_port }}

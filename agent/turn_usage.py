@@ -54,6 +54,28 @@ def _emit_llm_turn(**kwargs) -> None:
         logger.debug("llm_turn telemetry emit failed", exc_info=True)
 
 
+def _ttft_ms(agent: Any, api_start_time: Any, api_duration: float) -> int | None:
+    """Time-to-first-token from the per-attempt first stream chunk timestamp.
+
+    ``agent._last_api_first_chunk_at`` is reset each API attempt by
+    agent/turn_api_request.py and set by the streaming client when the first
+    chunk arrives (chat_completion_helpers.py / codex_runtime.py). It is an
+    absolute epoch-seconds value, so TTFT = first_chunk_at - api_start_time.
+    Returns None for non-streamed calls or when the timestamp is stale.
+    """
+    first_chunk = getattr(agent, "_last_api_first_chunk_at", None)
+    if first_chunk is None or api_start_time is None:
+        return None
+    try:
+        ms = (float(first_chunk) - float(api_start_time)) * 1000.0
+        # Reject clock skew and a stale chunk carried over from a prior attempt.
+        if 0.0 <= ms <= float(api_duration) * 1000.0 + 5000.0:
+            return int(round(ms))
+    except Exception:
+        pass
+    return None
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when
@@ -82,11 +104,13 @@ def _fold_moa_usage(agent, canonical_usage):
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    api_start_time: float | None = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
     consume a pending compaction verdict. Returns the loop-visible outcome."""
     rearmed = False
+    ttft_ms = _ttft_ms(agent, api_start_time, api_duration)
     compressor = agent.context_compressor
     # Count every completed provider attempt, including providers that omit usage.
     # Token/cost accounting below stays gated on real usage, but the request itself
@@ -108,7 +132,7 @@ def record_response_usage(
         _emit_llm_turn(
             model=agent.model, provider=agent.provider or "unknown",
             api_call=agent.session_api_calls, latency_ms=int(api_duration * 1000),
-            status="usage_unavailable",
+            status="usage_unavailable", ttft_ms=ttft_ms,
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
@@ -244,6 +268,7 @@ def record_response_usage(
         total_tokens=total_tokens,
         cache_read_tokens=canonical_usage.cache_read_tokens,
         cache_write_tokens=canonical_usage.cache_write_tokens,
+        ttft_ms=ttft_ms,
     )
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":

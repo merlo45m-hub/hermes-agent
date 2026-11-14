@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  author: hermes
+  description: Deploy a hot-standby LightLLM gateway ready to take over from the primary.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags: []
+dependencies: {}

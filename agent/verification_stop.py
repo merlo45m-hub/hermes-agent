@@ -227,4 +227,33 @@ def build_verify_on_stop_nudge(
     )
 
 
+def _proxy_reachability_summary(proxy_cfg: Optional["ProxyConfig"]) -> dict[str, Any]:
+    """Probe each enabled proxy and return a summary dict for the nudge."""
+    if proxy_cfg is None or not proxy_cfg.enabled_entries():
+        return {"proxies_checked": 0, "reachable": 0, "unreachable": 0, "entries": []}
+    import httpx
+
+    results = []
+    ok = 0
+    for entry in proxy_cfg.enabled_entries():
+        try:
+            with httpx.Client(timeout=proxy_cfg.probe_timeout) as client:
+                resp = client.get(entry.resolved_url(), headers=entry.headers, follow_redirects=True)
+            results.append(
+                {
+                    "name": entry.name,
+                    "url": entry.resolved_url(),
+                    "status": resp.status_code,
+                    "reachable": 200 <= resp.status_code < 400,
+                }
+            )
+            if 200 <= resp.status_code < 400:
+                ok += 1
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                {"name": entry.name, "url": entry.resolved_url(), "error": str(exc)[:80], "reachable": False}
+            )
+    return {"proxies_checked": len(results), "reachable": ok, "unreachable": len(results) - ok, "entries": results}
+
+
 __all__ = ["build_verify_on_stop_nudge", "verify_on_stop_enabled"]

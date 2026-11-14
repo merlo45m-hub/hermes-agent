@@ -1,7 +1,8 @@
 """
-voice_rewriter.py — Dual-provider LLM rewriter for low-confidence voice input.
-Primary: NVIDIA NIM (nvidia/nemotron-3-ultra-550b-a55b)
-Fallback: OpenRouter (nvidia/nemotron-3-ultra-550b-a55b:free)
+voice_rewriter.py — Multi-provider LLM rewriter for low-confidence voice input.
+Primary:   NVIDIA NIM  (nvidia/nemotron-3-ultra-550b-a55b)
+Fallback:  OpenRouter (nvidia/nemotron-3-ultra-550b-a55b:free)
+Fallback2: Nous       (reflection/beam-1.0-501b-a23b:free — Oct 2026 free model)
 """
 
 import hashlib
@@ -163,6 +164,70 @@ def _call_openrouter(
     return ""
 
 
+_NOUS_DEFAULT_BASE = "https://inference-api.nousresearch.com/v1"
+_NOUS_MODEL = "reflection/beam-1.0-501b-a23b:free"
+
+
+def _nous_credentials() -> tuple:
+    """Return (base_url, api_key) for the Nous inference API.
+
+    The Nous key lives in the Hermes credential store (~/.hermes/auth.json),
+    not in the shell environment, so read it from there. An explicitly
+    exported NOUS_API_KEY / NOUS_BASE_URL always wins.
+    """
+    base = os.environ.get("NOUS_BASE_URL", "").strip() or _NOUS_DEFAULT_BASE
+    key = os.environ.get("NOUS_API_KEY", "").strip()
+    if key:
+        return base, key
+    try:
+        path = os.path.join(os.path.expanduser("~/.hermes"), "auth.json")
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        prov = (data.get("providers") or {}).get("nous") or {}
+        key = str(prov.get("agent_key") or prov.get("access_token") or "").strip()
+        if prov.get("inference_base_url"):
+            base = str(prov["inference_base_url"]).rstrip("/")
+    except Exception:
+        pass
+    return base, key
+
+
+def _call_nous(
+    raw: str, system_prompt: str, base_url: str, api_key: str,
+    timeout: float = 10.0, max_tokens: int = 100,
+    model: str = _NOUS_MODEL,
+) -> str:
+    """Calls third provider: Nous (free tier)."""
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Input: {raw}"},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+        choices = body.get("choices", [])
+        if choices:
+            msg = choices[0].get("message", {})
+            return msg.get("content", "").strip()
+    return ""
+
+
 def articulate_prompt(text: str, timeout: float = 10.0) -> Dict[str, Any]:
     """Articulate typed text into a professional prompt.
 
@@ -188,7 +253,7 @@ def articulate_prompt(text: str, timeout: float = 10.0) -> Dict[str, Any]:
 
     nvidia_key = os.environ.get("NVIDIA_API_KEY", "").strip()
     if nvidia_key:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 out = _call_nvidia_nim(
                     raw, system_prompt, nvidia_key, timeout=timeout, max_tokens=max_tokens
@@ -200,12 +265,14 @@ def articulate_prompt(text: str, timeout: float = 10.0) -> Dict[str, Any]:
                         "latency_ms": round((time.perf_counter() - start_time) * 1000.0, 2),
                     }
             except Exception:
-                if attempt == 0:
-                    time.sleep(0.5)
+                # Exponential backoff: 0.5s, then 1s. A single blip should not
+                # cost the turn its articulation.
+                if attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
 
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if openrouter_key:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 out = _call_openrouter(
                     raw, system_prompt, openrouter_key, timeout=timeout, max_tokens=max_tokens
@@ -217,8 +284,28 @@ def articulate_prompt(text: str, timeout: float = 10.0) -> Dict[str, Any]:
                         "latency_ms": round((time.perf_counter() - start_time) * 1000.0, 2),
                     }
             except Exception:
-                if attempt == 0:
-                    time.sleep(0.5)
+                if attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
+
+    # Third provider: Nous free tier. Independent endpoint, so it covers an
+    # outage that takes both NVIDIA and OpenRouter down.
+    nous_base, nous_key = _nous_credentials()
+    if nous_key:
+        for attempt in range(3):
+            try:
+                out = _call_nous(
+                    raw, system_prompt, nous_base, nous_key,
+                    timeout=timeout, max_tokens=max_tokens,
+                )
+                if out:
+                    return {
+                        "articulated": _clean_text(out),
+                        "provider": "nous",
+                        "latency_ms": round((time.perf_counter() - start_time) * 1000.0, 2),
+                    }
+            except Exception:
+                if attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
 
     return {
         "articulated": raw,

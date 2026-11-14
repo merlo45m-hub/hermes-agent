@@ -1,0 +1,8 @@
+---
+# Handlers for the lightllm_standby role.
+
+- name: restart lightllm standby
+  ansible.builtin.systemd:
+    name: "lightllm-standby"
+    state: restarted
+    daemon_reload: true

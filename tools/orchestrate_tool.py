@@ -1,9 +1,16 @@
 """Layer 5 orchestration tool: runs Hermes' multi-agent state machine for a task.
 
 Wraps ``agent/orchestration_engine.run_orchestration`` as a callable Hermes gateway
-tool. The orchestration engine classifies the task, routes it to an agent (agy /
-codex / claude), dispatches, verifies and (optionally) retries through a LangGraph
-state machine, returning the final state dict as JSON.
+tool. The orchestration engine classifies the task, routes it to the agent whose
+ROLE owns that task type (agy / codex / claude), dispatches, verifies and
+(optionally) retries through a LangGraph state machine, returning the final state
+dict as JSON.
+
+Fleet roles: agy = Android/Godot/heavy compute (VPS), codex = complex coding and
+synthesis (Termux), claude = security review and research (Termux). General LLM
+queries that need no agent tooling stay on the gateway. Agents in backoff
+(quota 429, transport failure) are skipped automatically with exponential
+backoff; the run state reports which agents were skipped and why.
 """
 
 import asyncio
@@ -15,9 +22,14 @@ from tools.registry import registry, tool_error
 ORCHESTRATE_SCHEMA = {
     "name": "orchestrate",
     "description": (
-        "Run Hermes Layer 5 orchestration for a task: classify, route to an agent "
-        "(agy / codex / claude), dispatch, verify and retry through the multi-agent "
-        "state machine. Returns the final orchestration state as JSON."
+        "Run Hermes Layer 5 orchestration for a task: classify it, route to the "
+        "agent whose role owns that task type (agy = Android/Godot/heavy compute "
+        "on the VPS, codex = complex coding and synthesis on Termux, claude = "
+        "security review and research on Termux), dispatch, verify and retry "
+        "through the multi-agent state machine. Agents in backoff (quota 429, "
+        "transport failure) are skipped automatically with exponential backoff. "
+        "Use this for work that needs an agent's tools; route general LLM queries "
+        "through the gateway instead. Returns the final orchestration state as JSON."
     ),
     "parameters": {
         "type": "object",

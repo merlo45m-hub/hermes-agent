@@ -1,0 +1,7 @@
+---
+# Role-level variables for lightllm_primary (overrides defaults if needed).
+
+lightllm_service_name: "lightllm-primary"
+lightllm_config_dir: "/etc/lightllm"
+lightllm_model_dir: "/var/lib/lightllm/primary"
+lightllm_virtualenv: "/opt/lightllm-venv"
