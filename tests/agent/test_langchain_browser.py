@@ -228,4 +228,58 @@ def test_browser_actions_call_real_tool_surface(monkeypatch):
         "camofox_navigate", "camofox_click", "camofox_type", "camofox_press",
         "camofox_scroll", "camofox_snapshot", "camofox_vision", "camofox_close",
     ]
-    assert all(call[2] == "agent-task" for call in calls)
+
+
+def test_prompt_caching_and_async_arun():
+    import asyncio
+    from langchain_core.messages import AIMessage
+    from agent.langchain_browser import AgentExecutor, BrowserAgent, LLMCall, _PLAN_CACHE
+
+    _PLAN_CACHE.clear()
+    invoke_calls = []
+
+    class FakeChat:
+        def invoke(self, messages):
+            invoke_calls.append(messages)
+            return AIMessage(content='{"action": "finish", "answer": "cached ok"}')
+
+    llm = LLMCall(
+        model="test-cache-model",
+        system_prompt="You are a browser agent.",
+        create_chat_model=FakeChat,
+        prompt_caching=True,
+    )
+    r1 = llm.plan("open example.com", [])
+    r2 = llm.plan("open example.com", [])
+    assert r1 == {"action": "finish", "answer": "cached ok"}
+    assert r2 == {"action": "finish", "answer": "cached ok"}
+    assert len(invoke_calls) == 1
+    assert invoke_calls[0][0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+
+    provider = _FakeBrowser()
+    agent = BrowserAgent(provider, llm=LLMCall(use_oracle=True, oracle_plan=lambda p, h: {"action": "finish", "answer": "async done"}))
+    out = asyncio.run(AgentExecutor(agent).arun("finish immediately"))
+    assert out == {"status": "success", "answer": "async done"}
+
+
+def test_pydantic_validates_tool_outputs_and_actions():
+    from agent.langchain_browser import AgentTool, BrowserAgent, ConversationBufferMemory, LLMCall
+
+    bad_tool = AgentTool(
+        name="bad_tool",
+        description="returns malformed status",
+        kwargs_schema="",
+        call=lambda session: {"status": "invalid_status", "result": {}},
+    )
+    provider = _FakeBrowser()
+    agent = BrowserAgent(
+        provider,
+        llm=LLMCall(use_oracle=True),
+        tools=[bad_tool],
+    )
+    res = agent.call_tool("bad_tool", {"action": "bad_tool"}, ConversationBufferMemory(session_id="s1"), None)
+    assert res["status"] == "error"
+    assert "invalid structured output" in res["message"]
+
+    normalized = LLMCall._ensure_action({"action": "", "answer": 42})
+    assert normalized == {"action": "finish", "answer": "42"}

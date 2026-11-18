@@ -23,10 +23,14 @@ Public API
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -34,11 +38,14 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Literal,
     Mapping,
     Optional,
     Sequence,
     Tuple,
 )
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from langchain_core.chat_history import BaseChatMessageHistory, InMemoryChatMessageHistory
 from langchain_core.language_models import BaseChatModel
@@ -50,6 +57,57 @@ from langchain_core.prompts import (
 )
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import Tool
+
+try:
+    from langchain_core.caches import InMemoryCache
+    from langchain_core.globals import set_llm_cache
+except ImportError:  # pragma: no cover - optional in older langchain-core
+    InMemoryCache = None  # type: ignore[assignment]
+    set_llm_cache = None  # type: ignore[assignment]
+
+
+def enable_langchain_prompt_cache() -> bool:
+    """Enable LangChain's global InMemoryCache for repeated LLM invocations."""
+    if set_llm_cache is not None and InMemoryCache is not None:
+        set_llm_cache(InMemoryCache())
+        return True
+    return False
+
+
+enable_langchain_prompt_cache()
+
+_PLAN_CACHE_MAX = 256
+_PLAN_CACHE: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+_PLAN_CACHE_LOCK = threading.Lock()
+
+
+class AgentAction(BaseModel):
+    """Pydantic schema enforcing deterministic structured action output from the LLM."""
+
+    model_config = ConfigDict(extra="allow")
+
+    action: str = Field(default="finish", min_length=1)
+    answer: Optional[str] = None
+
+
+class ToolCallOutput(BaseModel):
+    """Pydantic schema enforcing deterministic structured outputs from all tool calls."""
+
+    model_config = ConfigDict(extra="allow")
+
+    status: Literal["success", "error"]
+    result: Dict[str, Any] = Field(default_factory=dict)
+    message: Optional[str] = None
+    session: Optional[Dict[str, Any]] = None
+
+
+class AgentRunOutput(BaseModel):
+    """Pydantic schema enforcing deterministic AgentExecutor run() output."""
+
+    status: Literal["success", "error"]
+    answer: Optional[str] = None
+    message: Optional[str] = None
+    observation: Optional[str] = None
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +196,7 @@ class LLMCall:
     max_tokens: int = 512
     system_prompt: str = ""
     create_chat_model: Optional[Callable[[], BaseChatModel]] = None
+    prompt_caching: bool = True
     # When True the agent skips the LLM and hands control to a scripted "oracle"
     # (used by tests and record/replay).
     use_oracle: bool = False
@@ -151,12 +210,35 @@ class LLMCall:
             return None
         return self.create_chat_model()
 
+    def _cache_key(self, prompt: str, history: List[Dict[str, Any]]) -> str:
+        raw = json.dumps(
+            {
+                "m": self.model,
+                "t": self.temperature,
+                "s": self.system_prompt,
+                "p": prompt,
+                "h": history,
+            },
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
     def plan(self, prompt: str, history: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Ask the LLM for the next action; returns a parsed JSON action dict."""
         if self.use_oracle:
             return self.oracle_plan(prompt, history) if self.oracle_plan else {"action": "finish", "answer": "oracle done"}
         if self.oracle_plan is not None:
             return self.oracle_plan(prompt, history)
+
+        cache_key = self._cache_key(prompt, history) if self.prompt_caching else None
+        if cache_key is not None:
+            with _PLAN_CACHE_LOCK:
+                cached = _PLAN_CACHE.get(cache_key)
+                if cached is not None:
+                    _PLAN_CACHE.move_to_end(cache_key)
+                    return dict(cached)
+
         chat = self.chat_model()
         if chat is None:
             raise RuntimeError(
@@ -165,13 +247,21 @@ class LLMCall:
             )
         messages = self._build_messages(prompt, history)
         response = chat.invoke(messages)
-        payload = self._extract_payload(response)
-        return self._ensure_action(payload)
+        payload = self._ensure_action(self._extract_payload(response))
+
+        if cache_key is not None:
+            with _PLAN_CACHE_LOCK:
+                _PLAN_CACHE[cache_key] = dict(payload)
+                _PLAN_CACHE.move_to_end(cache_key)
+                while len(_PLAN_CACHE) > _PLAN_CACHE_MAX:
+                    _PLAN_CACHE.popitem(last=False)
+        return payload
 
     def _build_messages(self, prompt: str, history: List[Dict[str, Any]]) -> List[BaseMessage]:
         msgs: List[BaseMessage] = []
         if self.system_prompt:
-            msgs.append(SystemMessage(content=self.system_prompt))
+            sys_kwargs = {"cache_control": {"type": "ephemeral"}} if self.prompt_caching else {}
+            msgs.append(SystemMessage(content=self.system_prompt, additional_kwargs=sys_kwargs))
         for turn in history:
             if turn.get("role") == "user":
                 msgs.append(HumanMessage(content=turn["content"]))
@@ -197,10 +287,13 @@ class LLMCall:
 
     @staticmethod
     def _ensure_action(payload: Dict[str, Any]) -> Dict[str, Any]:
-        action = payload.get("action", "finish")
-        if not isinstance(action, str):
-            action = "finish"
-        return {"action": action, **payload}
+        candidate = dict(payload) if isinstance(payload, dict) else {}
+        raw_action = candidate.get("action")
+        if not isinstance(raw_action, str) or not raw_action.strip():
+            candidate["action"] = "finish"
+        if candidate.get("answer") is not None and not isinstance(candidate["answer"], str):
+            candidate["answer"] = str(candidate["answer"])
+        return AgentAction.model_validate(candidate).model_dump(exclude_none=True)
 
 
 def _session_name(task_id: str) -> str:
@@ -235,22 +328,20 @@ class AgentExecutor:
                 if action.get("action") == "finish":
                     answer = action.get("answer", "")
                     memory.save_context({"task": task, "action": action}, {"answer": answer})
-                    return {"status": "success", "answer": answer}
+                    return AgentRunOutput(status="success", answer=str(answer)).model_dump(exclude_none=True)
                 result = self.agent.call_tool(action.get("action"), action, memory, config)
                 observation = self.agent._render(result)
                 history.append({"role": "user", "content": prompt})
                 memory.save_context({"task": task, "action": action}, {"output": result})
                 if self.agent._stopped:
-                    return {"status": "success", "answer": observation}
-            return {"status": "error", "message": "max steps exceeded", "observation": observation}
+                    return AgentRunOutput(status="success", answer=observation).model_dump(exclude_none=True)
+            return AgentRunOutput(status="error", message="max steps exceeded", observation=observation).model_dump(exclude_none=True)
         finally:
             pass
 
     async def arun(self, task: str, *, config: Optional[RunnableConfig] = None, max_steps: int = _DEFAULT_MAX_STEPS) -> Dict[str, Any]:
-        # The synchronous path is sufficient for the browser agent; async flow is
-        # an opt-in when the caller's chat model supports ``ainvoke``.
-        result = self.run(task, config=config, max_steps=max_steps)
-        return result
+        # Offload synchronous browser/LLM steps to a worker thread so async gateway loops never block.
+        return await asyncio.to_thread(self.run, task, config=config, max_steps=max_steps)
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +366,7 @@ def _browser_task_id(session: Dict[str, object]) -> str:
 
 
 def _browser_result(response: Any, session: Dict[str, object]) -> Dict[str, Any]:
-    """Normalize browser tool responses to the LangChain agent result contract."""
+    """Normalize and Pydantic-validate browser tool responses to the agent result contract."""
     if isinstance(response, str):
         try:
             response = json.loads(response)
@@ -284,12 +375,13 @@ def _browser_result(response: Any, session: Dict[str, object]) -> Dict[str, Any]
     if not isinstance(response, dict):
         response = {"result": response}
     success = response.get("success") is not False and "error" not in response
-    return {
-        "status": "success" if success else "error",
-        "result": response,
-        **({"message": str(response["error"])} if not success and response.get("error") else {}),
-        "session": session,
-    }
+    validated = ToolCallOutput(
+        status="success" if success else "error",
+        result=response,
+        message=str(response["error"]) if not success and response.get("error") else None,
+        session=dict(session),
+    )
+    return validated.model_dump(exclude_none=True)
 
 
 def _execute_navigate(session: Dict[str, object], url: str) -> Dict[str, Any]:
@@ -468,10 +560,20 @@ class BrowserAgent:
             # The action name itself is not a tool argument; pass only the tool's
             # named parameters to the underlying browser tool.
             kwargs = {k: v for k, v in parsed.items() if k != "action"}
-            result = tool.call(self._session, **kwargs)
+            raw_result = tool.call(self._session, **kwargs)
+            validated = ToolCallOutput.model_validate(raw_result)
+            result = validated.model_dump(exclude_none=True)
+        except ValidationError as exc:
+            return ToolCallOutput(
+                status="error",
+                message=f"{name} returned invalid structured output: {exc}",
+            ).model_dump(exclude_none=True)
         except Exception as exc:  # pragma: no cover - defensive
             self.logger.exception("tool %r failed", name)
-            return {"status": "error", "message": f"{name} failed: {exc}"}
+            return ToolCallOutput(
+                status="error",
+                message=f"{name} failed: {exc}",
+            ).model_dump(exclude_none=True)
         if result.get("status") == "success":
             self._stopped = False
         return result
