@@ -205,7 +205,27 @@ def export_batch(provider, batch: list[dict[str, Any]]) -> int:
     n = 0
     for ev in batch:
         try:
-            tracer.start_span(f"hermes.{ev.get('event', 'event')}", attributes=_span_attrs(ev)).end()
+            ts_ns = ev.get("ts_ns")
+            duration_ms = ev.get("duration_ms")
+            if duration_ms is None:
+                duration_ms = ev.get("latency_ms")
+            start_time = int(ts_ns) if isinstance(ts_ns, (int, float)) and ts_ns > 0 else None
+            end_time = None
+            if start_time is not None and isinstance(duration_ms, (int, float)) and duration_ms >= 0:
+                end_time = start_time + int(duration_ms * 1_000_000)
+            span = tracer.start_span(
+                f"hermes.{ev.get('event', 'event')}",
+                attributes=_span_attrs(ev),
+                start_time=start_time,
+            )
+            err = _event_error_message(ev)
+            if err is not None:
+                try:
+                    from opentelemetry.trace import Status, StatusCode
+                    span.set_status(Status(StatusCode.ERROR, err[:256]))
+                except ImportError:
+                    pass
+            span.end(end_time=end_time)
             n += 1
         except Exception:
             logger.debug("OTLP span map failed", exc_info=True)
