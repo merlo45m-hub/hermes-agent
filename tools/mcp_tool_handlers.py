@@ -503,6 +503,26 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
+_STATELESS_PROTOCOL_MODES = {"stateless", "modern", "2026-07-28"}
+
+
+def _stateless_request_meta(server) -> Optional[dict]:
+    """Build the per-request 2026-07-28 ``meta`` for stateless/modern servers.
+
+    Returns ``None`` for legacy / auto-resolved-legacy so no ``meta`` is attached and
+    existing byte behavior is preserved. Reads the protocol mode from
+    ``server._config["protocol"]`` (same key as ``mcp_tool_transport:230``).
+    """
+    mode = str(((getattr(server, "_config", None) or {})).get("protocol", "auto")).lower().strip()
+    if mode not in _STATELESS_PROTOCOL_MODES:
+        return None
+    from mcp import types  # late import, matches _complete_handshake_at_offered_version
+    return {
+        types.PROTOCOL_VERSION_META_KEY: "2026-07-28",
+        types.CLIENT_CAPABILITIES_META_KEY: types.ClientCapabilities().model_dump(exclude_none=True),
+    }
+
+
 async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
@@ -520,6 +540,12 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     # A progress callback makes the SDK send ``_meta.progressToken``, the spec's opt-in for
     # ``notifications/progress``; without one the server must stay silent.
     extra = {"progress_callback": progress_callback} if progress_callback is not None else {}
+    # 2026-07-28 stateless/modern: attach per-request meta (protocolVersion +
+    # clientCapabilities). Legacy / auto-resolved-legacy attach nothing, preserving
+    # existing byte behavior.
+    _meta = _stateless_request_meta(server)
+    if _meta is not None:
+        extra["meta"] = _meta
     _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
