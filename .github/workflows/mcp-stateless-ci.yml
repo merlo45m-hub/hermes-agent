@@ -20,6 +20,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install package and pytest
-        run: python -m pip install -e . pytest
+        run: python -m pip install -e . pytest psutil ruamel.yaml
       - name: Run focused negative-control tests
         run: python -m pytest tests/tools/test_mcp_stateless_meta.py -q
