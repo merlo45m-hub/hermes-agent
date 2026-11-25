@@ -210,9 +210,12 @@ def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
 app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=app_lifespan)
 
 from hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware
+from hermes_cli.dashboard_auth.rate_limit import RateLimitMiddleware
 
 # Register first (innermost): auth gates run before this, JSON parsing after it.
 app.add_middleware(AuthBodyLimitMiddleware)
+# 120 requests/min/IP; single-process dashboard, no external dependency.
+app.add_middleware(RateLimitMiddleware, limit=120, window_s=60.0)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
