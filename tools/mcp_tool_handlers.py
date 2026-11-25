@@ -523,7 +523,8 @@ def _stateless_request_meta(server) -> Optional[dict]:
     }
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None,
+                                        input_responses=None, request_state=None, allow_input_required=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -546,6 +547,12 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     _meta = _stateless_request_meta(server)
     if _meta is not None:
         extra["meta"] = _meta
+    if input_responses is not None:
+        extra["input_responses"] = input_responses
+    if request_state is not None:
+        extra["request_state"] = request_state
+    if allow_input_required is not None:
+        extra["allow_input_required"] = allow_input_required
     _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
@@ -716,6 +723,79 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
+_MAX_MRTR_ROUND_TRIPS = 2
+
+
+def _mrtr_error_result(tool_name: str, message: str):
+    """Fail-closed ``CallToolResult`` for an unresolvable MRTR flow."""
+    from mcp import types  # late import, matches the other MCP SDK accesses
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=f"MCP tool '{tool_name}': {message}")],
+        is_error=True,
+    )
+
+
+def _mrtr_result_type(result) -> Optional[str]:
+    """Read the SDK model field (snake) or wire alias (camel) for MRTR discrimination."""
+    return getattr(result, "result_type", None) or getattr(result, "resultType", None)
+
+
+async def _resolve_mrtr_inputs(server, server_name: str, tool_name: str, input_requests: dict):
+    """Resolve ElicitRequest items through the existing handler; decline every other type."""
+    from mcp import types
+    responses: dict = {}
+    context = getattr(server, "_pending_call_context", None)
+    for key, request in (input_requests or {}).items():
+        method = getattr(request, "method", None)
+        if method != "elicitation/create":
+            return None, _mrtr_error_result(
+                tool_name, f"unsupported MCP input request '{method or '<unknown>'}' declined")
+        handler = getattr(server, "_elicitation", None)
+        if handler is None:
+            return None, _mrtr_error_result(tool_name, "elicitation requested but no handler is configured")
+        try:
+            answer = await handler(context, getattr(request, "params", None))
+        except Exception as exc:
+            logger.error("MRTR elicitation failed on '%s': %s", server_name, exc)
+            return None, _mrtr_error_result(tool_name, f"elicitation failed: {exc}")
+        if isinstance(answer, types.ErrorData) or getattr(answer, "action", None) == "decline":
+            return None, _mrtr_error_result(tool_name, "input declined by user or policy")
+        responses[key] = answer
+    return responses, None
+
+
+async def _call_tool_with_mrtr(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
+    """Bounded 2026-07-28 MRTR caller: resolve input requests, then retry the original tool.
+
+    Legacy/auto mode sends no ``allow_input_required`` flag, preserving existing behavior.
+    Explicit stateless modes opt in. At most two transport round trips occur; any unresolved
+    input request, unsupported type, or cap breach returns an explicit is-error result.
+    """
+    mode = str(((getattr(server, "_config", None) or {})).get("protocol", "auto")).lower().strip()
+    explicit_stateless = mode in _STATELESS_PROTOCOL_MODES
+    input_responses = None
+    request_state = None
+    allow_input_required = True if explicit_stateless else None
+    for round_no in range(1, _MAX_MRTR_ROUND_TRIPS + 1):
+        result = await _call_tool_racing_stdio_death(
+            server, server_name, tool_name, args, progress_callback,
+            input_responses=input_responses, request_state=request_state,
+            allow_input_required=allow_input_required)
+        if _mrtr_result_type(result) != "input_required":
+            return result
+        if round_no == _MAX_MRTR_ROUND_TRIPS:
+            return _mrtr_error_result(tool_name, "MRTR round-trip cap exceeded")
+        responses, error = await _resolve_mrtr_inputs(
+            server, server_name, tool_name,
+            getattr(result, "input_requests", None) or getattr(result, "inputRequests", None))
+        if error is not None:
+            return error
+        input_responses = responses
+        request_state = getattr(result, "request_state", None) or getattr(result, "requestState", None)
+        allow_input_required = True
+    return _mrtr_error_result(tool_name, "MRTR round-trip cap exceeded")
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
     """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
     string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
@@ -752,7 +832,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(
+                    result = await _call_tool_with_mrtr(
                         server, server_name, tool_name, args, _on_progress if report is not None else None)
                 finally:
                     server._pending_call_context = None
