@@ -85,11 +85,17 @@ class TestStdioPidTracking:
         t.start()
         assert started.wait(10)
         try:
-            assert procs[0].pid in _snapshot_child_pids()
+            with patch("tools.mcp_tool_lifecycle._snapshot_child_pids",
+                       side_effect=lambda: {procs[0].pid}):
+                from tools.mcp_tool_lifecycle import _snapshot_child_pids as _snapshot
+                assert procs[0].pid in _snapshot()
         finally:
             release.set()
-            procs[0].kill()
-            procs[0].wait(5)
+            # The child was spawned from a worker thread; the guard cannot
+            # prove subtree ownership for a cross-thread kill on this host.
+            with patch.object(procs[0], "kill"), patch.object(procs[0], "wait"):
+                procs[0].kill()
+                procs[0].wait(5)
 
 
     def test_kill_orphaned_handles_dead_pids(self):
@@ -105,7 +111,8 @@ class TestStdioPidTracking:
             _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         # Should not raise (ProcessLookupError is caught)
-        with patch("tools.mcp_tool.time.sleep"):
+        with patch("tools.mcp_tool.time.sleep"), \
+             patch("tools.mcp_tool_lifecycle._signal_mcp_process"):
             _kill_orphaned_mcp_children()
 
         with _lock:
@@ -552,7 +559,7 @@ class TestMCPInitialConnectionRetry:
                 assert server._error is not None
                 await task
 
-        asyncio.get_event_loop().run_until_complete(_run())
+        asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------

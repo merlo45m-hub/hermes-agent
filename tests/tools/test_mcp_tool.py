@@ -1134,8 +1134,10 @@ class TestMCPServerTask:
         async def _test():
             with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
                 server = MCPServerTask("native")
-                await server.start({"command": "npx", "args": ["-y", "test"]})
-                assert params.call_args.kwargs["cwd"] is None
+                with patch("tools.mcp_tool_transport._connect_inputs",
+                           return_value=(("npx", {}, None), "digest")):
+                    await server.start({"command": "npx", "args": ["-y", "test"]})
+                assert params.call_args.kwargs.get("cwd") is None
                 await server.shutdown()
 
         asyncio.run(_test())
@@ -1459,20 +1461,21 @@ class TestShutdown:
 class TestBuildSafeEnv:
     """Tests for _build_safe_env() environment filtering."""
 
-    def test_only_safe_vars_passed(self):
+    def test_only_safe_vars_passed(self, tmp_path):
         """Only safe baseline vars and XDG_* from os.environ are included."""
         from tools.mcp_tool_config import _build_safe_env
 
+        fake_home = str(tmp_path / "home")
         fake_env = {
             "PATH": "/usr/bin",
-            "HOME": "/home/test",
+            "HOME": fake_home,
             "USER": "test",
             "LANG": "en_US.UTF-8",
             "LC_ALL": "C",
             "TERM": "xterm",
             "SHELL": "/bin/bash",
             "TMPDIR": "/tmp",
-            "XDG_DATA_HOME": "/home/test/.local/share",
+            "XDG_DATA_HOME": f"{fake_home}/.local/share",
             "SECRET_KEY": "should_not_appear",
             "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
         }
@@ -1481,10 +1484,10 @@ class TestBuildSafeEnv:
 
         # Safe vars present
         assert result["PATH"] == "/usr/bin"
-        assert result["HOME"] == "/home/test"
+        assert result["HOME"] == fake_home
         assert result["USER"] == "test"
         assert result["LANG"] == "en_US.UTF-8"
-        assert result["XDG_DATA_HOME"] == "/home/test/.local/share"
+        assert result["XDG_DATA_HOME"] == f"{fake_home}/.local/share"
         # Unsafe vars excluded
         assert "SECRET_KEY" not in result
         assert "AWS_ACCESS_KEY_ID" not in result
