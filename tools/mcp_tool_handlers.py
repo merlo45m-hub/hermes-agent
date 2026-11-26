@@ -503,10 +503,14 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
+import uuid
 _STATELESS_PROTOCOL_MODES = {"stateless", "modern", "2026-07-28"}
+_IDEMPOTENCY_META_KEY = "dev.hermes/idempotencyKey"
+_MRTR_ATTEMPTS_PER_TRIP = 3
+_MRTR_BACKOFF_SECONDS = 0.01
 
 
-def _stateless_request_meta(server) -> Optional[dict]:
+def _stateless_request_meta(server, idempotency_key: Optional[str] = None) -> Optional[dict]:
     """Build the per-request 2026-07-28 ``meta`` for stateless/modern servers.
 
     Returns ``None`` for legacy / auto-resolved-legacy so no ``meta`` is attached and
@@ -517,14 +521,18 @@ def _stateless_request_meta(server) -> Optional[dict]:
     if mode not in _STATELESS_PROTOCOL_MODES:
         return None
     from mcp import types  # late import, matches _complete_handshake_at_offered_version
-    return {
+    meta = {
         types.PROTOCOL_VERSION_META_KEY: "2026-07-28",
         types.CLIENT_CAPABILITIES_META_KEY: types.ClientCapabilities().model_dump(exclude_none=True),
     }
+    if idempotency_key:
+        meta[_IDEMPOTENCY_META_KEY] = idempotency_key
+    return meta
 
 
 async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None,
-                                        input_responses=None, request_state=None, allow_input_required=None):
+                                        input_responses=None, request_state=None, allow_input_required=None,
+                                        idempotency_key=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -544,7 +552,7 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     # 2026-07-28 stateless/modern: attach per-request meta (protocolVersion +
     # clientCapabilities). Legacy / auto-resolved-legacy attach nothing, preserving
     # existing byte behavior.
-    _meta = _stateless_request_meta(server)
+    _meta = _stateless_request_meta(server, idempotency_key)
     if _meta is not None:
         extra["meta"] = _meta
     if input_responses is not None:
@@ -735,6 +743,90 @@ def _mrtr_error_result(tool_name: str, message: str):
     )
 
 
+def _mrtr_single_shot_envelope(tool_name: str, args: dict, idempotency_key: str) -> dict:
+    """Pure wire-shape helper for a stateless single-shot tools/call request."""
+    return {
+        "id": idempotency_key,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": args,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                _IDEMPOTENCY_META_KEY: idempotency_key,
+            },
+        },
+    }
+
+
+def _mrtr_input_required_envelope(input_requests: dict, request_state: str) -> dict:
+    """Pure wire-shape helper for an intermediate ``input_required`` result."""
+    return {
+        "resultType": "input_required",
+        "inputRequests": input_requests,
+        "requestState": request_state,
+    }
+
+
+def _mrtr_final_envelope(content: list, request_state: Optional[str] = None) -> dict:
+    """Pure wire-shape helper for an MRTR final result."""
+    result: dict = {"resultType": "complete", "content": content}
+    if request_state is not None:
+        result["requestState"] = request_state
+    return result
+
+
+def _mrtr_cancel_notification(idempotency_key: str, reason: str):
+    """Build the SDK's real notifications/cancelled shape carrying our idempotency key."""
+    from mcp import types
+    return types.CancelledNotification(
+        method="notifications/cancelled",
+        params={
+            "request_id": idempotency_key,
+            "reason": reason,
+            "meta": {_IDEMPOTENCY_META_KEY: idempotency_key},
+        },
+    )
+
+
+async def _mrtr_send_cancel(server, idempotency_key: str, reason: str) -> None:
+    """Best-effort cancellation notification; never masks the original error."""
+    send = getattr(getattr(server, "session", None), "send_notification", None)
+    if not callable(send):
+        return
+    try:
+        await send(_mrtr_cancel_notification(idempotency_key, reason))
+    except Exception as exc:
+        logger.debug("MRTR cancel notification failed: %s", exc)
+
+
+def _mrtr_is_call_cancelled(value) -> bool:
+    """Detect call_cancelled from ErrorData, dict errors, or result text."""
+    from mcp import types
+    if isinstance(value, types.ErrorData):
+        text = f"{getattr(value, 'message', '')} {getattr(value, 'data', '')}".lower()
+        return "call_cancelled" in text or "call cancelled" in text
+    if isinstance(value, dict):
+        error = value.get("error") or {}
+        text = str(error.get("message") or value.get("message") or "").lower()
+        return "call_cancelled" in text or "call cancelled" in text
+    text = str(getattr(value, "message", "") or "").lower()
+    return "call_cancelled" in text or "call cancelled" in text
+
+
+def _mrtr_is_outcome_uncertain(exc: BaseException) -> bool:
+    return "outcome_uncertain" in str(exc).lower()
+
+
+def _mrtr_is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, _StdioChildExited):
+        return False
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+    return _mrtr_is_outcome_uncertain(exc)
+
+
 def _mrtr_result_type(result) -> Optional[str]:
     """Read the SDK model field (snake) or wire alias (camel) for MRTR discrimination."""
     return getattr(result, "result_type", None) or getattr(result, "resultType", None)
@@ -765,35 +857,69 @@ async def _resolve_mrtr_inputs(server, server_name: str, tool_name: str, input_r
 
 
 async def _call_tool_with_mrtr(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
-    """Bounded 2026-07-28 MRTR caller: resolve input requests, then retry the original tool.
+    """Cancel-aware, retry-bounded 2026-07-28 MRTR caller.
 
-    Legacy/auto mode sends no ``allow_input_required`` flag, preserving existing behavior.
-    Explicit stateless modes opt in. At most two transport round trips occur; any unresolved
-    input request, unsupported type, or cap breach returns an explicit is-error result.
+    Legacy/auto mode sends no ``allow_input_required`` flag. Explicit stateless modes opt in
+    with one idempotency key reused across round trips. Each round trip gets at most three
+    attempts with exponential backoff; only transient transport errors are retried.
+    ``outcome_uncertain`` is replayed once only for read-only tools, otherwise it fails closed
+    as ``retry_unsafe``. Declines, unsupported inputs, cancellation and cap breaches send a
+    best-effort notifications/cancelled and return an explicit is-error result.
     """
     mode = str(((getattr(server, "_config", None) or {})).get("protocol", "auto")).lower().strip()
     explicit_stateless = mode in _STATELESS_PROTOCOL_MODES
+    idempotency_key = str(uuid.uuid4())
     input_responses = None
     request_state = None
     allow_input_required = True if explicit_stateless else None
+
+    async def _decline(reason: str):
+        await _mrtr_send_cancel(server, idempotency_key, reason)
+        return _mrtr_error_result(tool_name, reason)
+
     for round_no in range(1, _MAX_MRTR_ROUND_TRIPS + 1):
-        result = await _call_tool_racing_stdio_death(
-            server, server_name, tool_name, args, progress_callback,
-            input_responses=input_responses, request_state=request_state,
-            allow_input_required=allow_input_required)
+        result = None
+        uncertain_retried = False
+        for attempt in range(1, _MRTR_ATTEMPTS_PER_TRIP + 1):
+            try:
+                result = await _call_tool_racing_stdio_death(
+                    server, server_name, tool_name, args, progress_callback,
+                    input_responses=input_responses, request_state=request_state,
+                    allow_input_required=allow_input_required,
+                    idempotency_key=idempotency_key if explicit_stateless else None)
+                break
+            except Exception as exc:
+                if isinstance(exc, _StdioChildExited):
+                    raise
+                if not _mrtr_is_retryable(exc):
+                    raise
+                if _mrtr_is_outcome_uncertain(exc):
+                    if uncertain_retried:
+                        return await _decline("retry_unsafe: uncertain outcome already retried once")
+                    if not _tool_is_read_only(server_name, tool_name):
+                        return await _decline("retry_unsafe: uncertain non-read-only tool outcome")
+                    uncertain_retried = True
+                if attempt == _MRTR_ATTEMPTS_PER_TRIP:
+                    return await _decline(f"retry budget exhausted after {attempt} attempts")
+                await asyncio.sleep(_MRTR_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+        if result is None:
+            return await _decline("retry budget exhausted without a result")
+        if _mrtr_is_call_cancelled(result):
+            return await _decline("call_cancelled")
         if _mrtr_result_type(result) != "input_required":
             return result
         if round_no == _MAX_MRTR_ROUND_TRIPS:
-            return _mrtr_error_result(tool_name, "MRTR round-trip cap exceeded")
+            return await _decline("MRTR round-trip cap exceeded")
         responses, error = await _resolve_mrtr_inputs(
             server, server_name, tool_name,
             getattr(result, "input_requests", None) or getattr(result, "inputRequests", None))
         if error is not None:
+            await _mrtr_send_cancel(server, idempotency_key, "MRTR input declined or unsupported")
             return error
         input_responses = responses
         request_state = getattr(result, "request_state", None) or getattr(result, "requestState", None)
         allow_input_required = True
-    return _mrtr_error_result(tool_name, "MRTR round-trip cap exceeded")
+    return await _decline("MRTR round-trip cap exceeded")
 
 
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
