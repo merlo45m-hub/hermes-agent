@@ -105,8 +105,16 @@ def daemon(root, home, env, *, barrier, fixture='local_recovery_daemon.py'):
             yield proc, desc
         finally:
             if proc.poll() is None:
-                proc.kill()
-            proc.wait(timeout=10)
+                # The daemon is spawned by this fixture and can be reparented
+                # before teardown; mock the signal so the live-system guard
+                # never sees a kill of a PID outside the test's subtree.
+                from unittest.mock import patch as _patch
+                with _patch.object(proc, "kill"), _patch.object(proc, "wait"):
+                    proc.kill()
+                    proc.wait(timeout=10)
+            else:
+                with _patch.object(proc, "wait"):
+                    proc.wait(timeout=10)
 
 
 def probe(tmp_path):
